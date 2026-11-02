@@ -1,0 +1,11 @@
+# Zig build output and downloaded package cache
+/.zig-cache/
+/zig-out/
+/zig-pkg/
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+*.swp
+*~

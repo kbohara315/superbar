@@ -1,0 +1,8 @@
+{
+  "uuid": "superbar@kbohara315.github.io",
+  "name": "Superbar",
+  "description": "Dashboard for Codex and Claude Code usage plus system metrics, backed by the local superbar CLI.",
+  "shell-version": ["50"],
+  "version": 2,
+  "settings-schema": "org.gnome.shell.extensions.superbar"
+}
