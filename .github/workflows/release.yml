@@ -1,0 +1,53 @@
+name: Release
+
+# Push a tag like v0.1.0 to build and publish a release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Check tag matches build.zig.zon version
+        run: |
+          zon_version=$(sed -n 's/.*\.version = "\(.*\)".*/\1/p' build.zig.zon)
+          if [ "v${zon_version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match build.zig.zon version v${zon_version}" >&2
+            exit 1
+          fi
+
+      - name: Test
+        run: zig build test
+
+      - name: Package
+        run: |
+          mkdir dist
+          for arch in x86_64 aarch64; do
+            name="superbar-${GITHUB_REF_NAME}-linux-${arch}"
+            zig build -Dtarget=${arch}-linux-musl --prefix "stage/${name}"
+            # Same layout scripts/install.sh expects from a source checkout.
+            mkdir -p "stage/${name}/zig-out/bin" "stage/${name}/scripts"
+            mv "stage/${name}/bin/superbar" "stage/${name}/zig-out/bin/superbar"
+            rmdir "stage/${name}/bin"
+            cp -r extension "stage/${name}/extension"
+            rm -rf "stage/${name}/extension/tests"
+            cp scripts/install.sh scripts/uninstall.sh "stage/${name}/scripts/"
+            cp LICENSE README.md "stage/${name}/"
+            tar -C stage -czf "dist/${name}.tar.gz" "${name}"
+          done
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --title "${GITHUB_REF_NAME}" --generate-notes

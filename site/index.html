@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Superbar: Codex and Claude Code usage in the GNOME top bar</title>
+<meta name="description" content="A GNOME Shell extension that shows Codex and Claude Code usage limits, and optional Linux system metrics, in the top bar.">
+<meta property="og:title" content="Superbar">
+<meta property="og:description" content="Codex and Claude Code usage in the GNOME top bar.">
+<meta property="og:image" content="https://kbohara315.github.io/superbar/assets/screens/menu.png">
+<link rel="icon" href="assets/ProviderIcon-claude.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600&family=IBM+Plex+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="container nav-row">
+    <a class="wordmark" href="./">Superbar</a>
+    <nav aria-label="Primary">
+      <a href="#behavior">Behavior</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/kbohara315/superbar/blob/main/docs/usage.md">Docs</a>
+      <a href="https://github.com/kbohara315/superbar/releases/latest">Releases</a>
+      <a class="key" href="https://github.com/kbohara315/superbar">GitHub</a>
+      <button class="theme-toggle" type="button" aria-label="Switch to light theme">Light</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-copy">
+        <h1>Usage limits in your top bar.</h1>
+        <p class="lead">Superbar shows Codex and Claude Code usage in GNOME Shell.</p>
+        <div class="actions">
+          <a class="key key--primary" href="#install">Install</a>
+          <a class="key" href="https://github.com/kbohara315/superbar">View on GitHub</a>
+        </div>
+        <div class="cmd cut">
+          <code><span class="prompt">$</span> curl -fsSL https://kbohara315.github.io/superbar/install.sh | bash</code>
+          <button class="copy key" type="button" data-copy="curl -fsSL https://kbohara315.github.io/superbar/install.sh | bash">Copy</button>
+        </div>
+      </div>
+
+      <div class="hero-shot">
+        <img class="shot-bar" src="assets/screens/bar.png" alt="The GNOME top bar with Superbar: Codex at 9%, Claude Code at 13%, then CPU, memory and network." width="452" height="43">
+        <img class="shot-menu cut" src="assets/screens/menu.png" alt="The Superbar menu with Codex and Claude Code usage windows and CPU, memory and network tiles." width="448" height="638">
+      </div>
+    </div>
+  </section>
+
+  <section id="behavior" class="spec">
+    <div class="container spec-grid">
+      <h2>What it does</h2>
+      <dl class="ledger">
+        <div><dt>Pills</dt><dd>One per provider, with its primary-window usage. A pill turns red at 90%. The capsule beside them shows the system metrics you enable.</dd></div>
+        <div><dt>Usage windows</dt><dd>Primary (usually 5-hour) and secondary (usually weekly), each with percent used, a bar, and a reset countdown when the provider reports one.</dd></div>
+        <div><dt>Failures</dt><dd>If a fetch fails, the last good values stay and the card is marked stale. With no earlier snapshot, values show <code>—</code>.</dd></div>
+        <div><dt>System metrics</dt><dd>CPU, memory, swap, disk, network, battery, temperature. Off by default. Read from <code>/proc</code> and <code>/sys</code> with no subprocess.</dd></div>
+        <div><dt>Refresh</dt><dd>Providers every 60 seconds by default, never faster. Metrics from 1 second to 1 hour, each set separately.</dd></div>
+        <div><dt>CLI</dt><dd>A static Zig binary, <code>superbar</code>, fetches provider usage and writes the snapshot the extension reads.</dd></div>
+      </dl>
+    </div>
+    <div class="container"><p class="note">Provider data comes from upstream usage endpoints that may change. They are not stable public APIs.</p></div>
+  </section>
+
+  <section id="install" class="install">
+    <div class="container install-grid">
+      <div class="install-head">
+        <h2>Install</h2>
+        <p class="lead">Needs GNOME Shell 50. No Zig required.</p>
+      </div>
+      <div class="install-body">
+        <div class="graphite panel">
+          <div class="panel-head"><span>bash</span><button class="copy key" type="button" data-copy="curl -fsSL https://kbohara315.github.io/superbar/install.sh | bash">Copy</button></div>
+          <pre><code><span class="prompt">$</span> curl -fsSL https://kbohara315.github.io/superbar/install.sh | bash</code></pre>
+        </div>
+        <ol class="steps">
+          <li>The script downloads the latest release for your architecture, x86_64 or aarch64, and checks its SHA-256.</li>
+          <li>It installs the CLI to <code>~/.local/bin</code> and the extension under <code>~/.local/share/gnome-shell/extensions</code>.</li>
+          <li>Enable <b>Superbar</b> in the Extensions app. If it doesn’t show up, log out and back in.</li>
+        </ol>
+        <dl class="ledger ledger--tight">
+          <div><dt>Pin a version</dt><dd>Add <code>-s -- v0.1.0</code> after <code>bash</code>.</dd></div>
+          <div><dt>Tarball</dt><dd>Download one from <a href="https://github.com/kbohara315/superbar/releases/latest">Releases</a> and run <code>scripts/install.sh</code>.</dd></div>
+          <div><dt>From source</dt><dd>With Zig 0.17.0: <code>zig build &amp;&amp; scripts/install.sh</code>.</dd></div>
+          <div><dt>Remove</dt><dd>Run <code>scripts/uninstall.sh</code>.</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="container foot-row">
+    <a class="wordmark" href="./">Superbar</a>
+    <nav aria-label="Project">
+      <a href="https://github.com/kbohara315/superbar/blob/main/docs/usage.md">Usage</a>
+      <a href="https://github.com/kbohara315/superbar/blob/main/docs/cli.md">CLI reference</a>
+      <a href="https://github.com/kbohara315/superbar/blob/main/docs/development.md">Development</a>
+      <a href="https://github.com/kbohara315/superbar">GitHub</a>
+    </nav>
+    <p class="muted">MIT licensed.</p>
+  </div>
+</footer>
+
+<script>
+(function(){var r=document.documentElement,b=document.querySelector('.theme-toggle');
+function set(t){if(t==='light')r.setAttribute('data-theme','light');else r.removeAttribute('data-theme');b.textContent=t==='light'?'Dark':'Light';b.setAttribute('aria-label',t==='light'?'Switch to dark theme':'Switch to light theme');}
+var saved=null;try{saved=localStorage.getItem('theme')}catch(e){}
+set(saved==='light'?'light':'dark');
+b.addEventListener('click',function(){var n=r.getAttribute('data-theme')==='light'?'dark':'light';set(n);try{localStorage.setItem('theme',n)}catch(e){}});})();
+document.querySelectorAll('.copy').forEach(b=>b.addEventListener('click',async()=>{
+  try{await navigator.clipboard.writeText(b.dataset.copy);b.textContent='Copied';setTimeout(()=>b.textContent='Copy',1500)}catch{}
+}));
+</script>
+</body>
+</html>

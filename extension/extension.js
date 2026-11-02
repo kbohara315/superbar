@@ -93,6 +93,9 @@ export default class SuperbarExtension extends Extension {
         this._switchRenderers = [];
         this._settings = this.getSettings();
         this._indicator = new PanelMenu.Button(0.0, 'Superbar');
+        // The stock .panel-button theme paints a highlight and focus box-shadow around the whole
+        // indicator on click/focus; the pills already carry their own look, so drop it.
+        this._indicator.set_style('background-color: transparent; box-shadow: none; border: none;');
         const layout = new St.BoxLayout({ y_align: Clutter.ActorAlign.CENTER, style: 'spacing: 6px;' });
         const codex = this._panelProvider('codex', 'Codex');
         const claude = this._panelProvider('claude', 'Claude Code');

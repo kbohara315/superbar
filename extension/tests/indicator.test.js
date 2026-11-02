@@ -29,7 +29,8 @@ class Menu extends Actor {
     addMenuItem(item) { this.items.push(item); }
 }
 class Button extends Actor {
-    constructor(props = {}) { super(props); this.menu = new Menu(); }
+    // PanelMenu.Button takes positional args (alignment, name); St.Button takes a props object.
+    constructor(props) { super(props !== null && typeof props === 'object' ? props : {}); this.menu = new Menu(); }
 }
 class MenuItem extends Actor {
     constructor(text) { super({ text }); }
@@ -124,6 +125,9 @@ const extension = new ExtensionClass();
 let refreshes = 0;
 extension._refresh = () => { refreshes++; };
 extension.enable();
+
+// The stock panel-button highlight/shadow must be suppressed on click and focus.
+assert.match(extension._indicator.props.style, /box-shadow: none/);
 
 assert.deepEqual(iconFiles, [
     '/mock-extension/icons/ProviderIcon-codex.svg',
