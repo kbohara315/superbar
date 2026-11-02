@@ -9,3 +9,6 @@
 !.env.example
 *.swp
 *~
+# Local Hallmark state and release build output
+.hallmark/salt
+/stage/
