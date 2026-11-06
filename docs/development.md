@@ -12,9 +12,11 @@ zig build test
 `zig build test` runs Zig unit tests and the isolated CLI integration test. It does not contact real provider endpoints. Extension tests are standalone Node.js scripts:
 
 ```sh
-node --experimental-default-type=module extension/tests/model.test.js
-node --experimental-default-type=module extension/tests/indicator.test.js
+node extension/tests/model.test.js
+node extension/tests/indicator.test.js
 ```
+
+Current Node.js releases detect ES module syntax automatically. Older Node.js versions need `node --experimental-default-type=module` instead.
 
 The extension tests use Node mocks for GNOME Shell objects; they do not run inside GNOME Shell.
 

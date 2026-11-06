@@ -9,8 +9,11 @@
     <key name="show-network" type="b"><default>false</default><summary>Show network rate</summary></key>
     <key name="show-battery" type="b"><default>false</default><summary>Show battery status</summary></key>
     <key name="show-temperature" type="b"><default>false</default><summary>Show temperature</summary></key>
+    <key name="show-remaining" type="b"><default>true</default><summary>Show remaining Codex and Claude Code usage instead of used usage</summary></key>
     <key name="auto-provider-refresh" type="b"><default>true</default><summary>Refresh provider usage automatically</summary></key>
     <key name="auto-system-refresh" type="b"><default>true</default><summary>Refresh system metrics automatically</summary></key>
+    <key name="notify-thresholds" type="b"><default>true</default><summary>Notify when usage reaches 80% or 90% and when a usage window resets</summary></key>
+    <key name="disk-alert-percent" type="i"><default>90</default><range min="50" max="99"/><summary>Disk usage percentage that triggers a low-space notification</summary></key>
     <key name="provider-interval" type="d"><default>60.0</default><range min="60.0" max="3600.0"/><summary>Provider refresh interval in seconds</summary></key>
     <key name="cpu-interval" type="d"><default>2.0</default><range min="1.0" max="3600.0"/><summary>Cpu refresh interval in seconds</summary></key>
     <key name="memory-interval" type="d"><default>5.0</default><range min="1.0" max="3600.0"/><summary>Memory refresh interval in seconds</summary></key>

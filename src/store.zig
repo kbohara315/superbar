@@ -7,6 +7,28 @@ const std = @import("std");
 const linux = std.os.linux;
 
 pub const max_snapshot_bytes: usize = 256 * 1024;
+
+pub const Inspection = enum { missing, present };
+
+fn validateRuntimeDir(runtime_dir: []const u8) !void {
+    if (runtime_dir.len < 2 or runtime_dir[0] != '/' or containsDotDot(runtime_dir) or std.mem.indexOfScalar(u8, runtime_dir, 0) != null) return error.InvalidRuntimeDir;
+}
+
+/// Read-only check of `$XDG_RUNTIME_DIR`: the base directory must be absolute, owned by this user and private.
+/// Reports whether `superbar` exists yet. Unlike `open`, nothing is created.
+pub fn inspect(runtime_dir: []const u8) !Inspection {
+    try validateRuntimeDir(runtime_dir);
+    const root = try openAbsoluteDir(runtime_dir);
+    defer closeFd(root);
+    try verifyPrivateDir(root);
+    const app_fd = openDirAt(root, "superbar") catch |e| switch (e) {
+        error.NotFound => return .missing,
+        else => return e,
+    };
+    defer closeFd(app_fd);
+    try verifyPrivateDir(app_fd);
+    return .present;
+}
 const snapshot_name = "snapshot.json";
 const lock_name = ".lock";
 
@@ -17,7 +39,7 @@ pub const Store = struct {
     /// Open (and, if needed, create) `$XDG_RUNTIME_DIR/superbar`.
     /// runtime_dir must be absolute, owned by this user, and mode 0700.
     pub fn open(runtime_dir: []const u8) !Store {
-        if (runtime_dir.len < 2 or runtime_dir[0] != '/' or containsDotDot(runtime_dir) or std.mem.indexOfScalar(u8, runtime_dir, 0) != null) return error.InvalidRuntimeDir;
+        try validateRuntimeDir(runtime_dir);
         var root = try openAbsoluteDir(runtime_dir);
         errdefer if (root >= 0) closeFd(root);
         try verifyPrivateDir(root);
@@ -181,6 +203,41 @@ fn syscallOk(rc: usize) !void {
 }
 fn closeFd(fd: linux.fd_t) void {
     _ = linux.close(fd);
+}
+
+test "inspect reports a missing superbar directory without creating it" {
+    const testing = std.testing;
+    var random: [8]u8 = undefined;
+    try syscallOk(linux.getrandom(&random, random.len, 0));
+    const path = try std.fmt.allocPrint(testing.allocator, "/tmp/superbar-inspect-test-{d}-{x}", .{ linux.getpid(), std.mem.readInt(u64, &random, .little) });
+    defer testing.allocator.free(path);
+    const zpath = try std.fmt.allocPrintSentinel(testing.allocator, "{s}", .{path}, 0);
+    defer testing.allocator.free(zpath);
+    const app_path = try std.fmt.allocPrintSentinel(testing.allocator, "{s}/superbar", .{path}, 0);
+    defer testing.allocator.free(app_path);
+    const lock_path = try std.fmt.allocPrintSentinel(testing.allocator, "{s}/superbar/.lock", .{path}, 0);
+    defer testing.allocator.free(lock_path);
+    try syscallOk(linux.mkdirat(linux.AT.FDCWD, zpath, 0o700));
+    defer {
+        _ = linux.unlinkat(linux.AT.FDCWD, lock_path, 0);
+        _ = linux.unlinkat(linux.AT.FDCWD, app_path, 0x200); // AT_REMOVEDIR
+        _ = linux.unlinkat(linux.AT.FDCWD, zpath, 0x200);
+    }
+    try testing.expectEqual(Inspection.missing, try inspect(path));
+    var stat: linux.Statx = undefined;
+    try testing.expect(linux.errno(linux.statx(linux.AT.FDCWD, app_path, 0, .{ .TYPE = true }, &stat)) == .NOENT);
+    try testing.expectError(error.InvalidRuntimeDir, inspect("relative/path"));
+
+    // A group-accessible base directory is refused, as it is for open.
+    const root_fd = try openAbsoluteDir(path);
+    defer closeFd(root_fd);
+    try syscallOk(linux.fchmod(root_fd, 0o755));
+    try testing.expectError(error.InsecureDirectory, inspect(path));
+    try syscallOk(linux.fchmod(root_fd, 0o700));
+
+    var store = try Store.open(path);
+    store.close();
+    try testing.expectEqual(Inspection.present, try inspect(path));
 }
 
 test "private store writes and bounded reads in isolated temp dir" {

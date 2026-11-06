@@ -18,6 +18,10 @@ export default class SuperbarPreferences extends ExtensionPreferences {
             settings.bind(key, row, 'active', Gio.SettingsBindFlags.DEFAULT);
             display.add(row);
         }
+        const usage = new Adw.PreferencesGroup({ title: 'Usage' });
+        const remaining = new Adw.SwitchRow({ title: 'Show remaining usage (off = show used)', subtitle: 'Applies to Codex and Claude Code percentages, bars and alerts' });
+        settings.bind('show-remaining', remaining, 'active', Gio.SettingsBindFlags.DEFAULT);
+        usage.add(remaining);
         const refresh = new Adw.PreferencesGroup({ title: 'Refresh' });
         for (const [key, title] of [['auto-provider-refresh', 'Refresh provider usage automatically'], ['auto-system-refresh', 'Refresh system metrics automatically']]) {
             const row = new Adw.SwitchRow({ title });
@@ -31,6 +35,13 @@ export default class SuperbarPreferences extends ExtensionPreferences {
             const row = new Adw.SpinRow({ title, adjustment: new Gtk.Adjustment({ lower, upper: 3600, step_increment: 1, page_increment: 10 }) });
             settings.bind(key, row, 'value', Gio.SettingsBindFlags.DEFAULT); refresh.add(row);
         }
-        page.add(display); page.add(refresh); window.add(page);
+        const alerts = new Adw.PreferencesGroup({ title: 'Alerts' });
+        const notify = new Adw.SwitchRow({ title: 'Usage and disk notifications', subtitle: 'Usage at 80% or 90%, window resets, and disk space low' });
+        settings.bind('notify-thresholds', notify, 'active', Gio.SettingsBindFlags.DEFAULT);
+        alerts.add(notify);
+        const disk = new Adw.SpinRow({ title: 'Disk alert threshold (percent used)', adjustment: new Gtk.Adjustment({ lower: 50, upper: 99, step_increment: 1, page_increment: 5 }) });
+        settings.bind('disk-alert-percent', disk, 'value', Gio.SettingsBindFlags.DEFAULT);
+        alerts.add(disk);
+        page.add(display); page.add(usage); page.add(refresh); page.add(alerts); window.add(page);
     }
 }

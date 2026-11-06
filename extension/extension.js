@@ -8,13 +8,17 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {
-    isSnapshot, pillText, resetClock, resetCountdown, stateText, syncedText, usageLevel, usedPercent,
+    batteryTimeText, diskAlertMessage, errorReason, fullInText, parseProcStat, parseVmRssKb, processCpuPercent, topEntries, isSnapshot, nextRateLimitStreak, paceProjection, paceText, peakPercent,
+    displayPercent, pillText, providerBackoffSeconds, refreshFailureText, resetClock, resetCountdown, stateText, syncedText,
+    timeToFullSeconds, tokenExpiryText, usageLevel, usedPercent, windowAlerts, windowExpired, windowUsageText,
 } from './model.js';
 
 const POLL_SECONDS = 60;
 // Two sequential provider requests can each take up to 15 seconds.
 const FETCH_TIMEOUT_MS = 40_000;
 const MAX_OUTPUT = 256 * 1024;
+// Exit status the CLI uses when another refresh holds the runtime lock.
+const LOCK_BUSY_EXIT = 75;
 const READ_CHUNK = 16 * 1024;
 const BRAND = { codex: '#10a37f', claude: '#d97757' };
 const NEUTRAL = '#6b6f76';
@@ -29,6 +33,12 @@ const RATE_METRICS = ['cpu', 'network'];
 const VIRTUAL_IFACE = /^(lo|docker|veth|br-|virbr|tun|tap)/;
 const THERMAL_ZONES = 16;
 const MAX_INTERVAL = 3600;
+// About two hours of provider refreshes at the default one-minute interval.
+const MAX_PACE_SAMPLES = 120;
+// Top-consumer panel: at most this many /proc entries are scanned, and this many rows are shown.
+const MAX_PROCESS_SCAN = 512;
+const TOP_PROCESS_COUNT = 5;
+const PROCESS_METRICS = ['cpu', 'memory'];
 const ACCENT = '#10a37f';
 const METRIC_COLORS = { cpu: '#5b9cf6', memory: '#a78bfa', swap: '#2dd4bf', disk: '#f5b942', network: '#38bdf8',
     battery: '#4ade80', temperature: '#fb923c' };
@@ -84,6 +94,20 @@ export default class SuperbarExtension extends Extension {
         this._fetchProcess = null;
         this._fetchTimeout = 0;
         this._spinTimer = 0;
+        // Automatic provider refresh backs off after rate limiting; manual refresh ignores these.
+        this._rateLimitStreak = 0;
+        this._providerNextAt = 0;
+        // Per-window alert bookkeeping; see windowAlerts() in model.js.
+        this._alertMemo = {};
+        // In-memory usage samples per window for the burn-rate projection; not persisted.
+        this._paceSamples = {};
+        // Free-space samples for the disk time-to-full estimate, and the low-space alert state.
+        this._diskSamples = [];
+        this._diskEtaSeconds = null;
+        this._diskAlert = { alerted: false };
+        // Top-consumer panel: which metric it lists (null when closed) and the last CPU baseline.
+        this._processMetric = null;
+        this._procBaseline = null;
         this._snapshot = null;
         this._settingsOpen = false;
         this._metricTimers = {};
@@ -149,6 +173,7 @@ export default class SuperbarExtension extends Extension {
         this._followTimers = {};
         // Rows hold actors that are destroyed with the menu; a later enable rebuilds them.
         this._tileRows = [];
+        this._processBox = null;
         if (this._fetchTimeout) GLib.Source.remove(this._fetchTimeout);
         this._fetchTimeout = 0;
         if (this._spinTimer) GLib.Source.remove(this._spinTimer);
@@ -290,6 +315,9 @@ export default class SuperbarExtension extends Extension {
         titles.add_child(new St.Label({ text: name, style: 'font-weight: bold;' }));
         const synced = new St.Label({ text: 'Not synced yet', style: MUTED });
         titles.add_child(synced);
+        const reason = new St.Label({ text: '', style: MUTED, visible: false });
+        reason.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        titles.add_child(reason);
         const state = new St.Label({ text: 'Offline', y_align: Clutter.ActorAlign.CENTER,
             style: `${MUTED} border-radius: 999px; padding: 1px 8px; background-color: rgba(255, 255, 255, 0.1);` });
         header.add_child(badge);
@@ -304,7 +332,7 @@ export default class SuperbarExtension extends Extension {
         const secondary = this._addUsageRow(body, 'Weekly');
         item.add_child(body);
         this._indicator.menu.addMenuItem(item);
-        return { color: BRAND[provider], synced, state, primary, secondary, item };
+        return { color: BRAND[provider], synced, reason, state, primary, secondary, item };
     }
 
     // Title, reset countdown and percentage share one line above the bar.
@@ -321,21 +349,38 @@ export default class SuperbarExtension extends Extension {
         });
         const fill = new St.Widget({ y_expand: true });
         track.add_child(fill);
+        // The burn-rate line appears only after enough history; it stays hidden until then.
+        const pace = new St.Label({ text: '', style: MUTED, visible: false });
         row.add_child(top);
         row.add_child(track);
+        row.add_child(pace);
         parent.add_child(row);
-        return { percent, fill, reset };
+        return { percent, fill, reset, pace };
     }
 
+    // The timer ticks at the base interval; after rate limiting, ticks before the backoff deadline are skipped.
     _scheduleProviderTimer() {
         if (this._timer) GLib.Source.remove(this._timer);
         this._timer = 0;
         if (!this._settings.get_boolean('auto-provider-refresh')) return;
-        const seconds = Math.round(this._settings.get_double('provider-interval')) || POLL_SECONDS;
+        const seconds = this._providerBaseSeconds();
         this._timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, seconds, () => {
-            if (!this._disposed) this._refresh();
+            // A one-second allowance keeps a tick that lands just before the deadline from being skipped.
+            if (!this._disposed && Date.now() + 1000 >= this._providerNextAt) this._refresh('all');
             return this._disposed ? GLib.SOURCE_REMOVE : GLib.SOURCE_CONTINUE;
         });
+    }
+
+    _providerBaseSeconds() {
+        return Math.round(this._settings.get_double('provider-interval')) || POLL_SECONDS;
+    }
+
+    // Called after each full refresh (both providers, from the timer or the header button) that produced a
+    // snapshot. A full refresh without rate limiting resets the backoff; per-provider refreshes do not count.
+    _recordFullRefresh(snapshot, startedAt) {
+        this._rateLimitStreak = nextRateLimitStreak(this._rateLimitStreak, snapshot);
+        this._providerNextAt = this._rateLimitStreak > 0
+            ? startedAt + providerBackoffSeconds(this._providerBaseSeconds(), this._rateLimitStreak) * 1000 : 0;
     }
 
     // Each system metric polls on its own interval. Reads are tiny /proc and /sys files, so no subprocess is needed.
@@ -378,6 +423,8 @@ export default class SuperbarExtension extends Extension {
             result = this._readMetric(name, Date.now());
         } catch (_) { /* metrics are optional */ }
         if (!result) result = { value: 'unavailable', short: '—', alert: false };
+        if (name === 'disk' && Number.isFinite(result.percent)) this._checkDiskAlert(result.percent);
+        if (this._processMetric === name) this._renderProcesses(name);
         const tile = this._tiles[name];
         tile.value.set_text(result.value);
         tile.detail.set_text(result.detail ?? METRIC_TITLES[name]);
@@ -397,6 +444,12 @@ export default class SuperbarExtension extends Extension {
 
     // Returns the tile value and caption, the short top-bar text, the bar or sparkline level (`percent`, or
     // `level` for unbounded rates) and whether the value deserves the alert colour.
+    _checkDiskAlert(usedPct) {
+        const threshold = this._settings.get_int('disk-alert-percent');
+        const message = diskAlertMessage(this._diskAlert, usedPct, threshold, fullInText(this._diskEtaSeconds));
+        if (message) this._notify(message);
+    }
+
     _readMetric(name, now) {
         const percent = value => ({ value: `${value}%`, short: `${value}%`, percent: value, alert: value >= 90 });
         switch (name) {
@@ -424,17 +477,31 @@ export default class SuperbarExtension extends Extension {
             const free = Number(info.get_attribute_uint64('filesystem::free'));
             if (!(size > 0)) return null;
             const used = Math.round(100 * (size - free) / size);
-            return { value: `${used}%`, detail: `${formatSize(free / 1024)} free`, short: `${used}%`, percent: used,
-                alert: used >= 90 };
+            // Recent free-space samples give a fill-rate estimate; the caption shows it when there is enough history.
+            const samples = this._diskSamples;
+            samples.push({ t: now, free });
+            if (samples.length > MAX_PACE_SAMPLES) samples.shift();
+            this._diskEtaSeconds = timeToFullSeconds(samples, now);
+            const eta = fullInText(this._diskEtaSeconds);
+            return { value: `${used}%`, detail: [`${formatSize(free / 1024)} free`, eta].filter(Boolean).join(' · '),
+                short: `${used}%`, percent: used, alert: used >= this._settings.get_int('disk-alert-percent') };
         }
         case 'battery': {
             for (const battery of ['BAT0', 'BAT1']) {
-                const text = this._readFile(`/sys/class/power_supply/${battery}/capacity`).trim();
+                const base = `/sys/class/power_supply/${battery}`;
+                const text = this._readFile(`${base}/capacity`).trim();
                 const level = Number(text);
                 if (!text || !Number.isFinite(level)) continue;
-                const status = this._readFile(`/sys/class/power_supply/${battery}/status`).trim();
-                return { value: `${level}%`, detail: status || undefined, short: `${level}%`, percent: level,
-                    alert: level <= 15 && status !== 'Charging' };
+                const status = this._readFile(`${base}/status`).trim();
+                // Time remaining comes from the same sysfs files; no subprocess is needed.
+                const readings = { status };
+                for (const file of ['energy_now', 'energy_full', 'power_now', 'charge_now', 'charge_full', 'current_now']) {
+                    const raw = this._readFile(`${base}/${file}`).trim();
+                    readings[file] = raw === '' ? undefined : Number(raw);
+                }
+                const time = batteryTimeText(readings);
+                return { value: `${level}%`, detail: [status, time].filter(Boolean).join(' · ') || undefined, short: `${level}%`,
+                    percent: level, alert: level <= 15 && status !== 'Charging' };
             }
             return { value: 'unavailable', short: '—', alert: false };
         }
@@ -479,6 +546,7 @@ export default class SuperbarExtension extends Extension {
             x_expand: true, style: `min-width: ${CARD_WIDTH}px; spacing: ${TILE_GAP}px; padding: 6px 0;` });
         this._tiles = {};
         for (const name of SYSTEM_METRICS) this._tiles[name] = this._metricTile(name);
+        this._processBox = new St.BoxLayout({ vertical: true, x_expand: true, visible: false, style: 'spacing: 4px; padding: 4px 0;' });
         item.add_child(this._systemBody);
         this._indicator.menu.addMenuItem(item);
         this._systemItem = item;
@@ -524,8 +592,84 @@ export default class SuperbarExtension extends Extension {
             accessible_name: `Refresh ${METRIC_TITLES[name]}`, x_expand: true, style: tileStyle(false) });
         tile.button.connect('notify::hover', () => tile.button.set_style(tileStyle(tile.button.hover)));
         tile.track = box.get_last_child();
-        tile.button.connect('clicked', () => this._refreshSystem(name));
+        tile.button.connect('clicked', () => {
+            if (PROCESS_METRICS.includes(name)) this._toggleProcesses(name);
+            this._refreshSystem(name);
+        });
         return tile;
+    }
+
+    // Clicking the CPU or memory tile opens a list of its top processes; clicking the same tile closes it.
+    _toggleProcesses(name) {
+        this._processMetric = this._processMetric === name ? null : name;
+        this._procBaseline = null; // a CPU list starts a fresh baseline when it opens
+        this._processBox.visible = this._processMetric !== null;
+        this._processBox.remove_all_children();
+    }
+
+    _renderProcesses(metric) {
+        const box = this._processBox;
+        box.remove_all_children();
+        box.add_child(new St.Label({ text: `TOP PROCESSES · ${METRIC_TITLES[metric].toUpperCase()}`, style: SECTION }));
+        const rows = this._topProcesses(metric);
+        if (rows === null) {
+            box.add_child(new St.Label({ text: 'sampling…', style: MUTED }));
+            return;
+        }
+        for (const row of rows) {
+            const line = new St.BoxLayout({ style: 'spacing: 8px;' });
+            const name = new St.Label({ text: row.name, x_expand: true, y_align: Clutter.ActorAlign.CENTER });
+            name.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+            line.add_child(name);
+            line.add_child(new St.Label({ text: row.text, y_align: Clutter.ActorAlign.CENTER, style: 'font-weight: bold;' }));
+            box.add_child(line);
+        }
+        if (rows.length === 0) box.add_child(new St.Label({ text: 'no processes', style: MUTED }));
+    }
+
+    // Reads at most MAX_PROCESS_SCAN processes from /proc (no subprocess). Returns null while CPU needs a baseline.
+    _topProcesses(metric) {
+        const pids = this._listPids();
+        const total = this._readFile('/proc/stat').split('\n')[0].split(/\s+/).slice(1).map(Number)
+            .reduce((a, b) => a + b, 0);
+        const baseline = metric === 'cpu' ? this._procBaseline : null;
+        const ticks = new Map();
+        const entries = [];
+        for (const pid of pids) {
+            if (metric === 'cpu') {
+                const info = parseProcStat(this._readFile(`/proc/${pid}/stat`));
+                if (!info) continue;
+                ticks.set(pid, info.ticks);
+                const value = baseline ? processCpuPercent(info.ticks, baseline.ticks.get(pid), total, baseline.total) : null;
+                entries.push({ name: info.name, value, text: value === null ? '—' : `${value}%` });
+            } else {
+                const kb = parseVmRssKb(this._readFile(`/proc/${pid}/status`));
+                if (kb === null) continue;
+                const name = this._readFile(`/proc/${pid}/comm`).trim() || pid;
+                entries.push({ name, value: kb, text: formatSize(kb) });
+            }
+        }
+        if (metric === 'cpu') {
+            this._procBaseline = { total, ticks };
+            if (!baseline) return null;
+        }
+        return topEntries(entries, TOP_PROCESS_COUNT);
+    }
+
+    _listPids() {
+        const pids = [];
+        let dir;
+        try {
+            dir = GLib.Dir.open('/proc', 0);
+        } catch (_) {
+            return pids;
+        }
+        for (let seen = 0; seen < MAX_PROCESS_SCAN * 4 && pids.length < MAX_PROCESS_SCAN; seen++) {
+            const name = dir.read_name();
+            if (name === null) break;
+            if (/^\d+$/.test(name)) pids.push(name);
+        }
+        return pids;
     }
 
     // Packs the enabled tiles two per row; a wide tile takes a row of its own.
@@ -551,6 +695,8 @@ export default class SuperbarExtension extends Extension {
         }
         // A lone tile keeps half width instead of stretching across the row.
         if (row && slots === 1) row.add_child(new St.Widget({ x_expand: true }));
+        // The top-consumer panel sits below the tiles; it was removed with them above.
+        if (this._processBox) this._systemBody.add_child(this._processBox);
     }
 
     // Bars fill a share of whatever width their track was allocated.
@@ -669,9 +815,15 @@ export default class SuperbarExtension extends Extension {
         this._settingsRow(body, { title: 'USAGE', caption: true });
         this._settingsRows.codex = this._settingsRow(body, { icon: this._providerIcon('codex', 'Codex', 16), title: 'Codex', showKey: 'show-codex' });
         this._settingsRows.claude = this._settingsRow(body, { icon: this._providerIcon('claude', 'Claude Code', 16), title: 'Claude Code', showKey: 'show-claude' });
+        this._settingsRows.displayRemaining = this._settingsRow(body, {
+            icon: new St.Icon({ icon_name: 'view-list-symbolic', icon_size: 16, y_align: Clutter.ActorAlign.CENTER }),
+            title: 'Show remaining usage (off = show used)', showKey: 'show-remaining' });
         this._settingsRows.usageRefresh = this._settingsRow(body, {
             icon: new St.Icon({ icon_name: 'view-refresh-symbolic', icon_size: 16, y_align: Clutter.ActorAlign.CENTER }),
             title: 'Auto-refresh', showKey: 'auto-provider-refresh', intervalKey: 'provider-interval', min: 60 });
+        this._settingsRows.alerts = this._settingsRow(body, {
+            icon: new St.Icon({ icon_name: 'dialog-information-symbolic', icon_size: 16, y_align: Clutter.ActorAlign.CENTER }),
+            title: 'Usage and disk alerts', showKey: 'notify-thresholds' });
         body.add_child(new St.Widget({ style: 'height: 1px; background-color: rgba(255, 255, 255, 0.1); margin: 6px 0;' }));
         this._settingsRows.system = this._settingsRow(body, { title: 'SYSTEM · AUTO-REFRESH', caption: true,
             showKey: 'auto-system-refresh' });
@@ -711,6 +863,8 @@ export default class SuperbarExtension extends Extension {
             if (!visible) { // re-enabling starts a fresh baseline and an empty sparkline
                 delete this._metricState[name];
                 delete this._history[name];
+                if (name === 'disk') this._diskSamples = [];
+                if (this._processMetric === name) this._toggleProcesses(name);
             }
         }
         this._systemGroup.visible = SYSTEM_METRICS.some(name => this._settings.get_boolean(`show-${name}`));
@@ -722,16 +876,26 @@ export default class SuperbarExtension extends Extension {
             this._scheduleMetric(name);
             if (key === `show-${name}`) this._sampleMetric(name);
         }
+        // The usage display mode changes every provider percentage, so the view is redrawn from the last snapshot.
+        if ((key === null || key === 'show-remaining') && this._snapshot) this._renderSnapshot();
         if (key === null || key === 'auto-provider-refresh' || key === 'provider-interval')
             this._scheduleProviderTimer();
     }
 
-    _updateUsageRow(row, window, color, nowMs) {
-        const value = usedPercent(window);
-        row.percent.set_text(value === null ? 'unavailable' : `${value}% used`);
-        const width = value === null || value === 0 ? 0 : Math.max(4, Math.round(CARD_WIDTH * value / 100));
+    // The bar fills with the amount shown (remaining or used); the colour always follows used percent.
+    _updateUsageRow(row, window, color, nowMs, pace = '', mode = 'remaining') {
+        row.pace.set_text(pace);
+        row.pace.visible = pace !== '';
+        const value = usedPercent(window, nowMs);
+        const shown = displayPercent(value, mode);
+        row.percent.set_text(windowUsageText(window, nowMs, mode));
+        const width = shown === null || shown === 0 ? 0 : Math.max(4, Math.round(CARD_WIDTH * shown / 100));
         row.fill.set_width(width);
         row.fill.set_style(`background-color: ${usageLevel(value) === 'high' ? ALERT : color}; border-radius: 3px;`);
+        if (window && windowExpired(window, nowMs)) {
+            row.reset.set_text('↻ reset passed · awaiting data');
+            return;
+        }
         const clock = window ? resetClock(window.reset_at, nowMs) : '';
         const countdown = window ? resetCountdown(window.reset_at, nowMs).replace(/^resets in /, '') : '';
         row.reset.set_text(window ? `↻ ${countdown}${clock ? ` · ${clock}` : ''}` : '');
@@ -741,13 +905,14 @@ export default class SuperbarExtension extends Extension {
         if (this._fetchBusy || this._disposed) return;
         this._setBusy(true);
         const generation = this._generation;
+        const startedAt = Date.now();
         let proc;
         try {
             proc = Gio.Subprocess.new([this._binary(), 'fetch', '--provider', provider, '--format', 'json'],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
         } catch (_) {
             this._setBusy(false);
-            this._markRefreshFailure();
+            this._markRefreshFailure('failed');
             return;
         }
         this._fetchProcess = proc;
@@ -755,7 +920,8 @@ export default class SuperbarExtension extends Extension {
         const chunks = [];
         let size = 0;
         let finished = false;
-        const finish = (text, error) => {
+        // `failure` is null on success, otherwise the kind passed to _markRefreshFailure.
+        const finish = (text, failure) => {
             if (finished) return;
             finished = true;
             if (generation !== this._generation) return;
@@ -763,33 +929,37 @@ export default class SuperbarExtension extends Extension {
             this._fetchTimeout = 0;
             this._fetchProcess = null;
             this._setBusy(false);
-            if (error) {
-                this._markRefreshFailure();
+            if (failure) {
+                this._markRefreshFailure(failure);
                 return;
             }
             try {
                 const data = JSON.parse(text);
                 if (!isSnapshot(data))
                     throw new Error('Unsupported snapshot schema');
-                this._snapshot = data;
-                this._renderSnapshot();
+                this._applySnapshot(data, provider === 'all' ? startedAt : null);
             } catch (_) {
-                this._markRefreshFailure();
+                this._markRefreshFailure('failed');
             }
         };
-        const waitForExit = () => proc.wait_check_async(null, (p, result) => {
+        const waitForExit = () => proc.wait_async(null, (p, result) => {
             try {
-                p.wait_check_finish(result);
-                const output = new Uint8Array(size);
-                let offset = 0;
-                for (const chunk of chunks) {
-                    output.set(chunk, offset);
-                    offset += chunk.length;
-                }
-                finish(new TextDecoder().decode(output), null);
+                p.wait_finish(result);
             } catch (_) {
-                finish(null, 'fetch command failed');
+                finish(null, 'failed');
+                return;
             }
+            if (!p.get_if_exited() || p.get_exit_status() !== 0) {
+                finish(null, p.get_exit_status() === LOCK_BUSY_EXIT ? 'lock_busy' : 'failed');
+                return;
+            }
+            const output = new Uint8Array(size);
+            let offset = 0;
+            for (const chunk of chunks) {
+                output.set(chunk, offset);
+                offset += chunk.length;
+            }
+            finish(new TextDecoder().decode(output), null);
         });
         const readNext = () => stream.read_bytes_async(READ_CHUNK, GLib.PRIORITY_DEFAULT, null, (s, result) => {
             try {
@@ -801,27 +971,81 @@ export default class SuperbarExtension extends Extension {
                 size += bytes.length;
                 if (size > MAX_OUTPUT) {
                     try { proc.force_exit(); } catch (_) { /* exited */ }
-                    finish(null, 'fetch output exceeded limit');
+                    finish(null, 'failed');
                     return;
                 }
                 chunks.push(bytes);
                 readNext();
             } catch (_) {
                 try { proc.force_exit(); } catch (_) { /* exited */ }
-                finish(null, 'could not read fetch output');
+                finish(null, 'failed');
             }
         });
         this._fetchTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, FETCH_TIMEOUT_MS, () => {
             this._fetchTimeout = 0;
             try { proc.force_exit(); } catch (_) { /* exited */ }
-            finish(null, 'fetch timed out');
+            finish(null, 'timeout');
             return GLib.SOURCE_REMOVE;
         });
         readNext();
     }
 
-    _markRefreshFailure() {
-        this._headerLabel?.set_text('Refresh failed');
+    // Stores a fetched snapshot and updates what derives from it: backoff, alerts and the rendered view.
+    // `fullRefreshStartedAt` is the start time of a full refresh, or null for a single-provider refresh.
+    _applySnapshot(data, fullRefreshStartedAt = null) {
+        this._snapshot = data;
+        if (fullRefreshStartedAt !== null) this._recordFullRefresh(data, fullRefreshStartedAt);
+        this._recordPaceSamples(data, Date.now());
+        this._evaluateAlerts(data);
+        this._renderSnapshot();
+    }
+
+    _recordPaceSamples(snapshot, now) {
+        for (const provider of ['codex', 'claude']) {
+            const data = snapshot.providers[provider];
+            if (data.state !== 'fresh') continue;
+            for (const kind of ['primary', 'secondary']) {
+                const window = data.windows[kind];
+                if (!window || typeof window.reset_at !== 'string') continue;
+                const samples = this._paceSamples[`${provider}/${kind}`] ??= [];
+                samples.push({ t: now, percent: window.used_percent, resetAt: window.reset_at });
+                if (samples.length > MAX_PACE_SAMPLES) samples.shift();
+            }
+        }
+    }
+
+    // 'remaining' (the default) or 'used', from the show-remaining setting.
+    _displayMode() {
+        return this._settings.get_boolean('show-remaining') ? 'remaining' : 'used';
+    }
+
+    _pace(provider, kind, window) {
+        return window ? paceText(paceProjection(this._paceSamples[`${provider}/${kind}`], window.reset_at)) : '';
+    }
+
+    // Only fresh data alerts, so old carried-forward values never raise a notification.
+    _evaluateAlerts(snapshot) {
+        const now = Date.now();
+        for (const provider of ['codex', 'claude']) {
+            const data = snapshot.providers[provider];
+            if (data.state !== 'fresh') continue;
+            for (const kind of ['primary', 'secondary']) {
+                const window = data.windows[kind];
+                if (!window) continue;
+                const label = `${provider === 'codex' ? 'Codex' : 'Claude Code'} ${window.label}`;
+                for (const message of windowAlerts(this._alertMemo, `${provider}/${kind}`, label, window, now, this._displayMode()))
+                    this._notify(message);
+            }
+        }
+    }
+
+    _notify(message) {
+        if (!this._settings.get_boolean('notify-thresholds')) return;
+        Main.notify('Superbar', message);
+    }
+
+    _markRefreshFailure(kind = 'failed') {
+        this._headerLabel?.set_text(refreshFailureText(kind));
         if (!this._snapshot) {
             for (const pill of Object.values(this._pills)) {
                 pill.label.set_text('—');
@@ -837,21 +1061,28 @@ export default class SuperbarExtension extends Extension {
 
     _renderSnapshot() {
         const nowMs = Date.now();
+        const mode = this._displayMode();
         for (const provider of ['codex', 'claude']) {
             const data = this._snapshot.providers[provider];
             const pill = this._pills[provider];
             const card = this._cards[provider];
-            const peak = Math.max(usedPercent(data.windows.primary) ?? -1, usedPercent(data.windows.secondary) ?? -1);
-            const level = usageLevel(peak < 0 ? null : peak);
+            // The pill text and colour both use the peak of the windows, so they always agree.
+            const level = usageLevel(peakPercent(data, nowMs));
             const color = level === 'unknown' || data.state === 'unavailable' ? NEUTRAL
                 : level === 'high' ? ALERT : BRAND[provider];
-            pill.label.set_text(pillText(data));
+            pill.label.set_text(pillText(data, nowMs, mode));
             pill.box.set_style(this._pillStyle(color));
             pill.box.opacity = data.state === 'stale' ? 170 : 255;
-            card.synced.set_text(syncedText(data));
+            const expiry = tokenExpiryText(data, nowMs);
+            card.synced.set_text(expiry ? `${syncedText(data)} · ${expiry}` : syncedText(data));
             card.state.set_text(stateText(data));
-            this._updateUsageRow(card.primary, data.windows.primary, card.color, nowMs);
-            this._updateUsageRow(card.secondary, data.windows.secondary, card.color, nowMs);
+            const reason = errorReason(data, provider);
+            card.reason.set_text(reason ? `${reason.code}: ${reason.hint}` : '');
+            card.reason.visible = reason !== null;
+            this._updateUsageRow(card.primary, data.windows.primary, card.color, nowMs,
+                this._pace(provider, 'primary', data.windows.primary), mode);
+            this._updateUsageRow(card.secondary, data.windows.secondary, card.color, nowMs,
+                this._pace(provider, 'secondary', data.windows.secondary), mode);
         }
     }
 
