@@ -163,4 +163,60 @@ if "$binary" status --line --show bogus >/dev/null 2>&1; then
     exit 1
 fi
 
+# status overlays the live credential expiry on the saved one. A saved expiry in the past (the token was renewed
+# after the last fetch) must not survive when the credential file says the token is valid for hours.
+claude_live_ms=$(( (now + 8 * 3600) * 1000 ))
+printf '{"claudeAiOauth":{"accessToken":"claude-secret-token","expiresAt":%s}}' "$claude_live_ms" >"$tmp/home/.claude/.credentials.json"
+python3 - "$tmp/runtime/superbar/snapshot.json" <<'PY'
+import json
+import os
+import sys
+
+snapshot = {
+    "schema_version": 1,
+    "generated_at": "2026-11-06T10:00:00Z",
+    "providers": {
+        "codex": {"state": "unavailable", "last_success_at": None, "expires_at": None,
+                  "error": {"code": "network_error", "message": "Could not connect to provider"},
+                  "windows": {"primary": None, "secondary": None}},
+        "claude": {"state": "stale", "last_success_at": "2026-11-06T10:00:00Z", "expires_at": "2001-01-01T00:00:00Z",
+                   "error": {"code": "rate_limited", "message": "Provider rate limit reached"},
+                   "windows": {"primary": None, "secondary": None}},
+    },
+}
+path = sys.argv[1]
+fd = os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_CREAT, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump(snapshot, f)
+os.chmod(path, 0o600)
+PY
+"$binary" status --format json >"$tmp/status-live.out"
+if grep -q claude-secret-token "$tmp/status-live.out"; then
+    echo 'status printed a credential value' >&2
+    exit 1
+fi
+python3 - "$tmp/status-live.out" "$now" <<'PY'
+import datetime
+import json
+import pathlib
+import sys
+
+status = json.loads(pathlib.Path(sys.argv[1]).read_text())
+parsed = datetime.datetime.strptime(status["providers"]["claude"]["expires_at"], "%Y-%m-%dT%H:%M:%SZ")
+live = parsed.replace(tzinfo=datetime.timezone.utc).timestamp()
+assert live > int(sys.argv[2]) + 3600, status["providers"]["claude"]
+PY
+
+# With no credential file the saved expiry is kept as it was.
+rm -f "$tmp/home/.claude/.credentials.json"
+"$binary" status --format json >"$tmp/status-saved.out"
+python3 - "$tmp/status-saved.out" <<'PY'
+import json
+import pathlib
+import sys
+
+status = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert status["providers"]["claude"]["expires_at"] == "2001-01-01T00:00:00Z", status["providers"]["claude"]
+PY
+
 echo 'isolated CLI integration tests passed'

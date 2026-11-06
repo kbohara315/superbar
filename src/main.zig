@@ -209,9 +209,17 @@ pub fn main(init: std.process.Init) !void {
             } else |_| {}
         } else |_| {}
     } else |_| {}
-    const parsed = initial orelse return error.SnapshotUnavailable;
+    var parsed = initial orelse return error.SnapshotUnavailable;
     defer parsed.deinit();
     if (parsed.value.schema_version != 1) return error.UnsupportedSchema;
+    // The live expiry in the credential file wins over the copy saved at the last fetch, which goes stale when a
+    // CLI renews its token. A missing or unreadable file keeps the saved value.
+    const live_codex = liveExpiryIso(init, true);
+    defer if (live_codex) |v| init.gpa.free(v);
+    const live_claude = liveExpiryIso(init, false);
+    defer if (live_claude) |v| init.gpa.free(v);
+    if (live_codex) |v| parsed.value.providers.codex.expires_at = v;
+    if (live_claude) |v| parsed.value.providers.claude.expires_at = v;
     if (line_output) {
         const now = try nowIso(init);
         defer init.gpa.free(now);
@@ -270,6 +278,19 @@ fn windowExpired(window: Window, now_iso: []const u8) bool {
     const reset = window.reset_at orelse return false;
     if (reset.len < 19 or now_iso.len < 19) return false;
     return std.mem.order(u8, reset[0..19], now_iso[0..19]) != .gt;
+}
+
+// Expiry from the credential file as it is right now, as an ISO timestamp the caller frees. Null when the file is
+// missing, unreadable, or records no expiry. Only the expiry is kept; the token is never copied or printed.
+fn liveExpiryIso(init: std.process.Init, codex: bool) ?[]const u8 {
+    const path = credentialPath(init.gpa, init.environ_map, if (codex) ".codex/auth.json" else ".claude/.credentials.json") catch return null;
+    defer init.gpa.free(path);
+    const bytes = readBounded(init.io, init.gpa, path) catch return null;
+    defer init.gpa.free(bytes);
+    const root = std.json.parseFromSlice(std.json.Value, init.gpa, bytes, .{ .allocate = .alloc_always }) catch return null;
+    defer root.deinit();
+    const seconds = credentialExpiry(root.value, codex) orelse return null;
+    return epochIso(init.gpa, seconds);
 }
 
 fn credentialPath(a: std.mem.Allocator, env: *std.process.Environ.Map, subpath: []const u8) ![]u8 {

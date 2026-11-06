@@ -59,10 +59,22 @@ export function percentLabel(used, mode = 'remaining') {
     return mode === 'used' ? `${displayPercent(used, 'used')}% used` : `${displayPercent(used, 'remaining')}% left`;
 }
 
-// The pill shows the lowest remaining value, which is the same window that gives the peak used percentage.
+// The pill shows the primary (5-hour) window only, in the display mode. It never falls back to the weekly window.
+// When the weekly window is at or above the high line while the 5-hour one is not, the pill appends `wk!` so a red
+// pill with a healthy 5-hour number is explained.
 export function pillText(provider, nowMs = Date.now(), mode = 'remaining') {
-    const value = displayPercent(peakPercent(provider, nowMs), mode);
-    return value === null ? '—' : `${value}%`;
+    const primary = usedPercent(provider?.windows?.primary, nowMs);
+    const shown = displayPercent(primary, mode);
+    const text = shown === null ? '—' : `${shown}%`;
+    const weeklyHigh = usageLevel(usedPercent(provider?.windows?.secondary, nowMs)) === 'high';
+    const primaryHigh = usageLevel(primary) === 'high';
+    return weeklyHigh && !primaryHigh ? `${text} wk!` : text;
+}
+
+// The pill is red when either usable window is at or above the high line (90% used).
+export function pillHigh(provider, nowMs = Date.now()) {
+    return [provider?.windows?.primary, provider?.windows?.secondary]
+        .some(window => usageLevel(usedPercent(window, nowMs)) === 'high');
 }
 
 // Text for one usage row. An expired window reads as a reset with unknown usage, never as its old percentage.
@@ -163,12 +175,66 @@ export function compactDuration(seconds) {
     return 'under 1m';
 }
 
-// "token expires in 20m" or "token expired"; null when the snapshot recorded no expiry.
-export function tokenExpiryText(provider, nowMs = Date.now()) {
-    const epoch = typeof provider?.expires_at === 'string' ? Date.parse(provider.expires_at) : NaN;
+// Card text for the access token. `liveExpiresAt` is the expiry read from the credential file right now; when it is
+// null, the snapshot's saved expiry is used. An expired token is normal (the CLI renews it on next use), so only a
+// failed authentication in the last refresh gets a strong message.
+export function tokenExpiryText(provider, nowMs = Date.now(), liveExpiresAt = null) {
+    const iso = liveExpiresAt ?? provider?.expires_at;
+    const epoch = typeof iso === 'string' ? Date.parse(iso) : NaN;
     if (!Number.isFinite(epoch)) return null;
     const delta = Math.floor((epoch - nowMs) / 1000);
-    return delta <= 0 ? 'token expired' : `token expires in ${compactDuration(delta)}`;
+    if (delta > 0) return `token expires in ${compactDuration(delta)}`;
+    return provider?.error?.code === 'authentication_required' ? 'token expired · sign in again' : 'token renews on next use';
+}
+
+// Base64url (RFC 4648 section 5, unpadded or padded) to a byte string. Null when the input is not base64.
+function base64UrlDecode(text) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let bits = 0;
+    let value = 0;
+    let out = '';
+    for (const ch of text.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '')) {
+        const index = alphabet.indexOf(ch);
+        if (index < 0) return null;
+        value = ((value << 6) | index) & 0xffffff;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out += String.fromCharCode((value >> bits) & 0xff);
+        }
+    }
+    return out;
+}
+
+// Expiry of the access token in the credential file's text, as an ISO timestamp, or null. Claude stores
+// claudeAiOauth.expiresAt in milliseconds; a Codex access token is a JWT whose payload `exp` claim is read.
+// Only the expiry leaves this function; the token is decoded for its claims and not returned or stored.
+export function credentialExpiryIso(text, codex) {
+    let root;
+    try {
+        root = JSON.parse(text);
+    } catch (_) {
+        return null;
+    }
+    let ms;
+    if (codex) {
+        const token = root?.tokens?.access_token;
+        const payload = typeof token === 'string' ? token.split('.')[1] : undefined;
+        const decoded = payload === undefined ? null : base64UrlDecode(payload);
+        let claims = null;
+        try {
+            claims = decoded === null ? null : JSON.parse(decoded);
+        } catch (_) {
+            claims = null;
+        }
+        if (!Number.isFinite(claims?.exp)) return null;
+        ms = claims.exp * 1000;
+    } else {
+        ms = root?.claudeAiOauth?.expiresAt;
+        if (!Number.isFinite(ms)) return null;
+    }
+    const date = new Date(ms);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
 // Automatic provider refresh backs off after consecutive rate-limited refreshes: each one doubles the base

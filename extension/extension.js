@@ -8,8 +8,8 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {
-    batteryTimeText, diskAlertMessage, errorReason, fullInText, parseProcStat, parseVmRssKb, processCpuPercent, topEntries, isSnapshot, nextRateLimitStreak, paceProjection, paceText, peakPercent,
-    displayPercent, pillText, providerBackoffSeconds, refreshFailureText, resetClock, resetCountdown, stateText, syncedText,
+    batteryTimeText, credentialExpiryIso, diskAlertMessage, errorReason, fullInText, parseProcStat, parseVmRssKb, processCpuPercent, topEntries, isSnapshot, nextRateLimitStreak, paceProjection, paceText, peakPercent,
+    displayPercent, pillHigh, pillText, providerBackoffSeconds, refreshFailureText, resetClock, resetCountdown, stateText, syncedText,
     timeToFullSeconds, tokenExpiryText, usageLevel, usedPercent, windowAlerts, windowExpired, windowUsageText,
 } from './model.js';
 
@@ -1014,6 +1014,15 @@ export default class SuperbarExtension extends Extension {
         }
     }
 
+    // ISO expiry of the provider's access token from its credential file, or null. Only the expiry is kept.
+    _liveExpiry(provider) {
+        const codex = provider === 'codex';
+        const path = codex
+            ? GLib.build_filenamev([GLib.getenv('CODEX_HOME') ?? GLib.build_filenamev([GLib.get_home_dir(), '.codex']), 'auth.json'])
+            : GLib.build_filenamev([GLib.get_home_dir(), '.claude', '.credentials.json']);
+        return credentialExpiryIso(this._readFile(path), codex);
+    }
+
     // 'remaining' (the default) or 'used', from the show-remaining setting.
     _displayMode() {
         return this._settings.get_boolean('show-remaining') ? 'remaining' : 'used';
@@ -1066,14 +1075,16 @@ export default class SuperbarExtension extends Extension {
             const data = this._snapshot.providers[provider];
             const pill = this._pills[provider];
             const card = this._cards[provider];
-            // The pill text and colour both use the peak of the windows, so they always agree.
-            const level = usageLevel(peakPercent(data, nowMs));
-            const color = level === 'unknown' || data.state === 'unavailable' ? NEUTRAL
-                : level === 'high' ? ALERT : BRAND[provider];
+            // The text shows the 5-hour window; the colour turns red when either window is nearly used.
+            const hasUsage = usedPercent(data.windows.primary, nowMs) !== null || usedPercent(data.windows.secondary, nowMs) !== null;
+            const color = !hasUsage || data.state === 'unavailable' ? NEUTRAL
+                : pillHigh(data, nowMs) ? ALERT : BRAND[provider];
             pill.label.set_text(pillText(data, nowMs, mode));
             pill.box.set_style(this._pillStyle(color));
             pill.box.opacity = data.state === 'stale' ? 170 : 255;
-            const expiry = tokenExpiryText(data, nowMs);
+            // The expiry is read from the credential file on every render, so a token renewed by its CLI since the
+            // last fetch is not shown as expired. The saved snapshot value is the fallback.
+            const expiry = tokenExpiryText(data, nowMs, this._liveExpiry(provider));
             card.synced.set_text(expiry ? `${syncedText(data)} · ${expiry}` : syncedText(data));
             card.state.set_text(stateText(data));
             const reason = errorReason(data, provider);

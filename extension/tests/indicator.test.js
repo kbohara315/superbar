@@ -107,6 +107,7 @@ const context = {
         PRIORITY_DEFAULT: 0,
         build_filenamev: parts => parts.join('/'),
         get_home_dir: () => '/mock-home',
+        getenv: () => null,
         file_get_contents: path => {
             if (!(path in files)) throw new Error(`no such file ${path}`);
             return [true, new TextEncoder().encode(files[path])];
@@ -210,7 +211,7 @@ extension._snapshot = {
     },
 };
 extension._renderSnapshot();
-assert.equal(pills[0].children[1].props.text, '17%'); // remaining is the default; the pill shows the lowest remaining (weekly)
+assert.equal(pills[0].children[1].props.text, '100%'); // remaining is the default; the pill shows the 5-hour window (0% used)
 assert.match(pills[0].props.style, /#10a37f/);
 assert.equal(pills[1].children[1].props.text, '5%');
 assert.match(pills[1].props.style, /#e5484d/); // high usage overrides the brand colour
@@ -223,10 +224,10 @@ assert.match(codexCard.secondary.reset.props.text, /^↻ 2h 30m/);
 assert.equal(extension._cards.claude.secondary.percent.props.text, 'unavailable');
 assert.equal(codexCard.state.props.text, 'Live');
 extension._markRefreshFailure();
-assert.equal(pills[0].children[1].props.text, '17% !');
+assert.equal(pills[0].children[1].props.text, '100% !');
 extension._renderSnapshot();
 context.indicator.menu.signals['open-state-changed'](context.indicator.menu, true);
-assert.equal(pills[0].children[1].props.text, '17%');
+assert.equal(pills[0].children[1].props.text, '100%');
 
 refreshButton.signals.clicked();
 assert.equal(refreshes, 2); // initial refresh plus the header button
@@ -399,12 +400,28 @@ assert.match(extension._cards.codex.synced.props.text, /· token expires in 19m$
 extension._snapshot.providers.codex = { state: 'fresh', last_success_at: null, expires_at: new Date(Date.now() - 1000).toISOString(),
     windows: { primary: { used_percent: 10 }, secondary: null } };
 extension._renderSnapshot();
-assert.equal(extension._cards.codex.synced.props.text, 'Not synced yet · token expired');
+assert.equal(extension._cards.codex.synced.props.text, 'Not synced yet · token renews on next use');
 extension._snapshot.providers.codex = { state: 'fresh', last_success_at: null, windows: { primary: { used_percent: 10 }, secondary: null } };
 extension._renderSnapshot();
 assert.equal(extension._cards.codex.synced.props.text, 'Not synced yet');
 
 assert.equal(extension._settingsRows.alerts.row.children.length, 3); // icon, title and switch
+// The pill is the 5-hour window alone. A healthy 5-hour window with a nearly used weekly one turns the pill red
+// and adds the `wk!` marker; a dash appears only when the 5-hour window is missing or has reset.
+extension._snapshot = { schema_version: 1, providers: {
+    codex: { state: 'fresh', last_success_at: null, windows: { primary: { used_percent: 2, reset_at: future },
+        secondary: { used_percent: 10, reset_at: future } } },
+    claude: { state: 'fresh', windows: { primary: { used_percent: 2, reset_at: future }, secondary: { used_percent: 92, reset_at: future } } } } };
+extension._renderSnapshot();
+assert.equal(pills[0].children[1].props.text, '98%');
+assert.match(pills[0].props.style, /#10a37f/); // weekly 10% is far from the line
+assert.equal(pills[1].children[1].props.text, '98% wk!');
+assert.match(pills[1].props.style, /#e5484d/); // weekly 92% used makes the pill red
+extension._snapshot.providers.claude = { state: 'fresh', last_success_at: null, windows: { primary: null, secondary: { used_percent: 95, reset_at: future } } };
+extension._renderSnapshot();
+assert.equal(pills[1].children[1].props.text, '— wk!');
+assert.match(pills[1].props.style, /#e5484d/);
+
 // Used mode (the setting turned off) shows used percentages everywhere; colour still follows used.
 extension._snapshot = { schema_version: 1, providers: {
     codex: { state: 'fresh', last_success_at: null, windows: { primary: { used_percent: 0, reset_at: future },
@@ -413,8 +430,8 @@ extension._snapshot = { schema_version: 1, providers: {
 extension._renderSnapshot();
 settingsValues['show-remaining'] = false;
 extension._applySettings('show-remaining');
-assert.equal(pills[0].children[1].props.text, '83%');
-assert.match(pills[0].props.style, /#10a37f/); // 83% used is below the alert line
+assert.equal(pills[0].children[1].props.text, '0%'); // the 5-hour window, used
+assert.match(pills[0].props.style, /#10a37f/); // the weekly 83% is below the alert line
 assert.equal(codexCard.primary.percent.props.text, '0% used');
 assert.equal(codexCard.primary.fill.props.width, 0);
 assert.equal(codexCard.secondary.percent.props.text, '83% used');
@@ -423,7 +440,7 @@ assert.equal(pills[1].children[1].props.text, '95%');
 assert.match(pills[1].props.style, /#e5484d/); // red still means used >= 90
 settingsValues['show-remaining'] = true;
 extension._applySettings('show-remaining');
-assert.equal(pills[0].children[1].props.text, '17%');
+assert.equal(pills[0].children[1].props.text, '100%');
 assert.equal(codexCard.secondary.percent.props.text, '17% left');
 assert.equal(pills[1].children[1].props.text, '5%');
 extension._snapshot.providers.claude = { state: 'fresh', last_success_at: null, windows: { primary: { used_percent: 51 }, secondary: null } };
@@ -519,6 +536,23 @@ assert.ok(deadlineWithin(900, Date.now())); // 60 * 2^5 is capped at 900 seconds
 assert.equal(runRefresh('all', healthy), 1);
 assert.equal(extension._rateLimitStreak, 0); // the interval resets on success
 assert.equal(extension._providerNextAt, 0);
+
+// The card reads the expiry from the credential file, so a token renewed after the last fetch is not shown as expired.
+extension._snapshot.providers.claude = { state: 'stale', last_success_at: null, expires_at: '2001-01-01T00:00:00Z',
+    error: { code: 'rate_limited', message: 'x' }, windows: { primary: null, secondary: null } };
+files['/mock-home/.claude/.credentials.json'] = JSON.stringify({ claudeAiOauth: { accessToken: 'claude-secret-token',
+    expiresAt: Date.now() + 8 * 3600_000 } });
+extension._renderSnapshot();
+assert.match(extension._cards.claude.synced.props.text, /· token expires in 7h 59m$|· token expires in 8h 0m$/);
+delete files['/mock-home/.claude/.credentials.json'];
+extension._renderSnapshot();
+assert.equal(extension._cards.claude.synced.props.text.endsWith('· token renews on next use'), true); // saved value, no file
+extension._snapshot.providers.claude = { state: 'stale', last_success_at: null, expires_at: '2001-01-01T00:00:00Z',
+    error: { code: 'authentication_required', message: 'x' }, windows: { primary: null, secondary: null } };
+extension._renderSnapshot();
+assert.equal(extension._cards.claude.synced.props.text.endsWith('· token expired · sign in again'), true);
+extension._snapshot.providers.claude = { state: 'fresh', last_success_at: null, windows: { primary: { used_percent: 5 }, secondary: null } };
+extension._renderSnapshot();
 
 // A busy lock is reported as its own header message, not as a generic failure.
 extension._markRefreshFailure('lock_busy');

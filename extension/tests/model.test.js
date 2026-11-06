@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import {
     batteryTimeText, compactDuration, parseProcStat, parseVmRssKb, processCpuPercent, topEntries, diskAlertMessage, errorReason, fullInText, isSnapshot, nextRateLimitStreak, paceProjection,
-    displayPercent, paceText, peakPercent, percentLabel, pillText, providerBackoffSeconds, refreshFailureText, resetClock, resetCountdown,
+    displayPercent, paceText, peakPercent, percentLabel, pillHigh, pillText, providerBackoffSeconds, refreshFailureText, resetClock, resetCountdown,
     stateText, syncedText, timeToFullSeconds, tokenExpiryText, usageLevel, usedPercent, windowAlerts, windowUsageText,
+    credentialExpiryIso,
 } from '../model.js';
 
 const snapshot = {
@@ -14,11 +15,11 @@ const snapshot = {
 };
 
 assert.equal(isSnapshot(snapshot), true);
-// Default mode is remaining: 23% used shows 77%, and the pill shows the lowest remaining (highest used) window.
+// The pill shows the 5-hour (primary) window only, in the display mode. Default is remaining.
 assert.equal(pillText(snapshot.providers.codex), '77%');
-assert.equal(pillText(snapshot.providers.claude), '30%');
+assert.equal(pillText(snapshot.providers.claude), '49%'); // 51% used; the weekly 70% does not drive the text
 assert.equal(pillText(snapshot.providers.codex, Date.now(), 'used'), '23%');
-assert.equal(pillText(snapshot.providers.claude, Date.now(), 'used'), '70%');
+assert.equal(pillText(snapshot.providers.claude, Date.now(), 'used'), '51%');
 assert.equal(peakPercent(snapshot.providers.claude), 70);
 assert.equal(pillText({ windows: { primary: null } }), '—');
 assert.equal(pillText(undefined), '—');
@@ -65,10 +66,30 @@ assert.equal(windowUsageText(expiredWindow, beforeReset), '5% left');
 assert.equal(windowUsageText(expiredWindow, beforeReset, 'used'), '95% used');
 assert.equal(windowUsageText(null, afterReset), 'unavailable');
 const staleProvider = { windows: { primary: expiredWindow, secondary: { used_percent: 40, reset_at: new Date(reset + 86400_000).toISOString() } } };
-assert.equal(pillText(staleProvider, afterReset), '60%');
-assert.equal(pillText(staleProvider, afterReset, 'used'), '40%');
+// The primary window has reset, so the pill shows a dash rather than the weekly window's number.
+assert.equal(pillText(staleProvider, afterReset), '—');
+assert.equal(pillText(staleProvider, afterReset, 'used'), '—');
 assert.equal(usageLevel(peakPercent(staleProvider, afterReset)), 'ok');
 assert.equal(pillText({ windows: { primary: expiredWindow, secondary: null } }, afterReset), '—');
+
+// Pill rules: primary decides the number; red when either window is at 90% used; `wk!` explains a red pill
+// whose 5-hour number is healthy; a missing primary is a dash.
+const win = used => ({ used_percent: used, reset_at: null });
+const pill = (primary, secondary, mode) => ({ windows: { primary: primary === null ? null : win(primary), secondary: secondary === null ? null : win(secondary) } });
+assert.equal(pillText(pill(2, 10)), '98%');
+assert.equal(pillText(pill(2, 10), Date.now(), 'used'), '2%');
+assert.equal(pillHigh(pill(2, 10)), false); // healthy 5-hour and weekly: not red below 90%
+assert.equal(pillHigh(pill(2, 89)), false);
+assert.equal(pillText(pill(2, 92)), '98% wk!'); // weekly nearly used: red, explained by the marker
+assert.equal(pillText(pill(2, 92), Date.now(), 'used'), '2% wk!');
+assert.equal(pillHigh(pill(2, 92)), true);
+assert.equal(pillText(pill(95, 10)), '5%'); // the 5-hour window is itself high: no marker needed
+assert.equal(pillHigh(pill(95, 10)), true);
+assert.equal(pillText(pill(null, 95)), '— wk!');
+assert.equal(pillHigh(pill(null, 95)), true);
+assert.equal(pillText(pill(null, null)), '—');
+assert.equal(pillHigh(pill(null, null)), false);
+assert.equal(pillText(pill(40, 40)), '60%'); // the weekly window does not change the text when healthy
 assert.equal(usageLevel(peakPercent({ windows: { primary: expiredWindow, secondary: null } }, beforeReset)), 'high');
 
 // Stale/offline reasons: the safe code plus a fix hint naming the provider's own CLI.
@@ -88,7 +109,12 @@ assert.equal(refreshFailureText('failed'), 'Refresh failed');
 // Token expiry comes from the credential file via the snapshot; a missing value shows nothing.
 const expiring = { expires_at: new Date(now + 20 * 60_000).toISOString() };
 assert.equal(tokenExpiryText(expiring, now), 'token expires in 20m');
-assert.equal(tokenExpiryText({ expires_at: new Date(now - 1000).toISOString() }, now), 'token expired');
+// An expired saved token is normal: the CLI renews it on next use, so no alarm unless the last refresh failed auth.
+assert.equal(tokenExpiryText({ expires_at: new Date(now - 1000).toISOString() }, now), 'token renews on next use');
+assert.equal(tokenExpiryText({ expires_at: new Date(now - 1000).toISOString(), error: { code: 'authentication_required' } }, now),
+    'token expired · sign in again');
+assert.equal(tokenExpiryText({ expires_at: new Date(now - 1000).toISOString(), error: { code: 'rate_limited' } }, now),
+    'token renews on next use');
 assert.equal(tokenExpiryText({ expires_at: null }, now), null);
 assert.equal(tokenExpiryText({}, now), null);
 assert.equal(compactDuration(3 * 86400 + 4 * 3600), '3d 4h');
@@ -217,5 +243,26 @@ assert.equal(percentLabel(100), '0% left');
 assert.equal(percentLabel(0), '100% left');
 // Remaining and used always add to 100 for the same displayed value.
 for (let used = 0; used <= 100; used++) assert.equal(displayPercent(used) + displayPercent(used, 'used'), 100);
+
+// A saved expiry from before a token renewal must not win over the live value in the credential file.
+const savedPast = { expires_at: '2001-01-01T00:00:00Z', error: { code: 'rate_limited' } };
+const liveFuture = new Date(now + 8 * 3600_000).toISOString();
+assert.equal(tokenExpiryText(savedPast, now, liveFuture), 'token expires in 8h 0m');
+assert.equal(tokenExpiryText(savedPast, now, null), 'token renews on next use'); // no credential file: saved value
+assert.equal(tokenExpiryText({ expires_at: liveFuture }, now, '2001-01-01T00:00:00Z'), 'token renews on next use');
+
+// Credential reader: Claude's millisecond expiresAt and Codex's JWT exp claim, read without keeping the token.
+const claudeMs = Date.parse('2026-11-07T01:09:52Z');
+const claudeText = JSON.stringify({ claudeAiOauth: { accessToken: 'claude-secret-token', expiresAt: claudeMs } });
+assert.equal(credentialExpiryIso(claudeText, false), '2026-11-07T01:09:52.000Z');
+assert.equal(credentialExpiryIso(JSON.stringify({ claudeAiOauth: { accessToken: 'x' } }), false), null);
+const jwt = ['eyJhbGciOiJub25lIn0', Buffer.from(JSON.stringify({ exp: 1790812800 })).toString('base64url'), 'sig'].join('.');
+const codexText = JSON.stringify({ tokens: { access_token: jwt } });
+assert.equal(credentialExpiryIso(codexText, true), new Date(1790812800 * 1000).toISOString());
+assert.equal(credentialExpiryIso(codexText.replace(jwt, 'not-a-jwt'), true), null);
+assert.equal(credentialExpiryIso(codexText.replace(jwt, 'a.!!!.c'), true), null);
+assert.equal(credentialExpiryIso('', false), null); // missing file reads as empty text
+assert.equal(credentialExpiryIso('{not json', true), null);
+assert.ok(!credentialExpiryIso(claudeText, false).includes('secret'));
 
 console.log('extension model tests passed');
