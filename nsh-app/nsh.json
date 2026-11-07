@@ -1,0 +1,36 @@
+{
+  "name": "Superbar",
+  "id": "com.superbar.app",
+  "version": "1.0.0",
+  "build": 1,
+  "capabilities": {
+    "network": {
+      "hosts": [
+        "chatgpt.com",
+        "api.anthropic.com"
+      ]
+    },
+    "fs": {
+      "read": [
+        "${homeDir}/.codex",
+        "${homeDir}/.claude",
+        "/proc",
+        "/sys",
+        "${dataDir}"
+      ],
+      "write": [
+        "${dataDir}"
+      ]
+    },
+    "process": {
+      "execute": [
+        "chmod",
+        "df"
+      ],
+      "env": [
+        "CODEX_HOME"
+      ]
+    },
+    "notifications": true
+  }
+}
