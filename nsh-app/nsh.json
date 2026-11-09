@@ -25,12 +25,19 @@
     "process": {
       "execute": [
         "chmod",
-        "df"
+        "df",
+        "top",
+        "vm_stat",
+        "sysctl",
+        "netstat",
+        "pmset",
+        "ps"
       ],
       "env": [
         "CODEX_HOME"
       ]
     },
     "notifications": true
-  }
+  },
+  "rust": "native"
 }

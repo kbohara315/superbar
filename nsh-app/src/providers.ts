@@ -145,6 +145,8 @@ export interface Deps {
   run: ProcessRunner;
   /** `process.platform`. Anything but `windows` is POSIX, where modes are enforced. */
   platform: string;
+  /** Waits `ms` milliseconds: between the retries of a rename Windows refuses while another program has the entry open. Default: a timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 const realFs: FileSystem = {
@@ -191,7 +193,7 @@ export function defaultDeps(): Deps {
     fs: realFs,
     fetch: (url, init) => fetch(url, init),
     env,
-    homeDir: env.HOME ? env.HOME : homeFromOs(),
+    homeDir: homeDirectory(env),
     dataDir: process.dataDir ?? null,
     now: () => new Date(),
     deadlineMs: FETCH_DEADLINE_MS,
@@ -200,12 +202,19 @@ export function defaultDeps(): Deps {
   };
 }
 
-function homeFromOs(): string | undefined {
+/**
+ * The user's home directory: the host's own (`os.homedir()`, the directory nsh's `${homeDir}` grants are anchored at),
+ * else HOME, else USERPROFILE (Windows). `process.env` holds only the variables nsh.json grants, so HOME and
+ * USERPROFILE are normally absent and the first source decides.
+ */
+export function homeDirectory(env: Deps["env"], homeOf: () => string = os.homedir): string | undefined {
   try {
-    return os.homedir();
+    const home = homeOf();
+    if (home) return home;
   } catch {
-    return undefined;
+    // No home directory configured on this host.
   }
+  return env.HOME || env.USERPROFILE || undefined;
 }
 
 function resolveDeps(overrides?: Partial<Deps>): Deps {
@@ -214,6 +223,48 @@ function resolveDeps(overrides?: Partial<Deps>): Deps {
 
 function isPosix(deps: Pick<Deps, "platform">): boolean {
   return deps.platform !== "windows";
+}
+
+// Windows refuses a rename (and some other calls) while another program (an indexer, a virus scanner, an editor) has the
+// entry open without sharing. That clears within moments, so a rename retries a few times with short waits.
+export const BUSY_RETRY_MS: readonly number[] = [25, 50, 100, 200];
+
+/**
+ * Whether `err` looks like Windows' short-lived "in use" refusal. nsh reports Node's code where it has a name for the
+ * error: `EPERM`, `EACCES` or `EBUSY`. Windows' ERROR_SHARING_VIOLATION (os error 32) has no Node name, so nsh may give
+ * the error NO code (its message ends in `(os error 32)`) or the number itself. An error with no code is retried only
+ * when it names no OS error or names 32; any other known code (`ENOENT`, `EIO`, ...) or other OS error number is a real
+ * failure and is not retried.
+ */
+export function isWindowsBusy(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const raw = (err as { code?: unknown }).code;
+  if (raw === "EPERM" || raw === "EACCES" || raw === "EBUSY" || raw === 32 || raw === "32") return true;
+  if (raw !== undefined && raw !== null) return false;
+  const message = (err as { message?: unknown }).message;
+  const number = typeof message === "string" ? /\(os error (\d+)\)/.exec(message) : null;
+  return number === null || number[1] === "32";
+}
+
+/**
+ * Runs `op`; on Windows retries it after `BUSY_RETRY_MS` waits while it fails with a transient refusal (`isWindowsBusy`).
+ * Elsewhere, for any other failure, and after the last retry, the error is thrown.
+ */
+export async function retryWhileBusy(
+  op: () => Promise<void>,
+  windows: boolean,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await op();
+      return;
+    } catch (err) {
+      const wait = BUSY_RETRY_MS[attempt];
+      if (!windows || wait === undefined || !isWindowsBusy(err)) throw err;
+      await sleep(wait);
+    }
+  }
 }
 
 /** Whether a stat result has the expected permission bits. Always true where modes are not enforced (Windows). */
@@ -378,19 +429,123 @@ export function parseClaude(body: string): Windows {
 // Credentials: location, token, expiry. A token value only ever leaves this section as a request header.
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** Lexically normalizes an absolute POSIX path. Returns null for relative paths and for any `..` segment. */
-function normalizeAbsolute(path: string): string | null {
-  if (!path.startsWith("/")) return null;
+/** A parsed absolute path: its root (`/`, `C:`, or `\\server\share`) and its names. */
+interface AbsolutePath {
+  root: string;
+  parts: string[];
+}
+
+const WINDOWS_DRIVE = /^[A-Za-z]:$/;
+
+/**
+ * Lexically parses an absolute path for `platform`. Returns null for relative paths and for any `..` segment.
+ *
+ * POSIX (Linux, macOS): must start with `/`. Windows (nsh's name for it is `"windows"`): a drive path (`C:\Users\me`,
+ * also written with `/`), the same behind the verbatim prefix `\\?\` (a Windows host may hand out its directories that way),
+ * or a share (`\\server\share\x`). `\\?\UNC\server\share` is the verbatim spelling of a share. A rooted path without a drive
+ * (`\Users`) and a drive-relative one (`C:foo`, and a bare `C:`, which means the drive's current directory) are not
+ * absolute here. The device namespace (`\\.\`, `\\?\` followed by
+ * anything but a drive or `UNC`) is never a path here.
+ *
+ * `strict` (Windows only; used for CODEX_HOME) also refuses names Windows reads as something other than a plain folder
+ * or file name: a `:` (an alternate data stream, or a drive spec in the middle), a trailing `.` or space (Windows strips
+ * them, so `.codex.` means `.codex`), the characters `<>"|?*` and control characters, and reserved device names
+ * (`CON`, `CONIN$`, `CONOUT$`, `NUL`, `COM1`, `aux.txt`, ...). This is a lexical screen that keeps odd spellings out of the containment test,
+ * not a security boundary: the real check is nsh's sandbox, which canonicalizes the path itself.
+ */
+function parseAbsolute(path: string, platform: string, strict = false): AbsolutePath | null {
+  if (platform !== "windows") {
+    if (!path.startsWith("/")) return null;
+    const parts: string[] = [];
+    for (const segment of path.split("/")) {
+      if (segment === "" || segment === ".") continue;
+      if (segment === "..") return null;
+      parts.push(segment);
+    }
+    return { root: "/", parts };
+  }
+  let text = path.replace(/\//g, "\\");
+  let share = false;
+  if (text.startsWith("\\\\?\\UNC\\")) {
+    text = text.slice(8);
+    share = true;
+  } else if (text.startsWith("\\\\?\\")) {
+    text = text.slice(4);
+  } else if (text.startsWith("\\\\")) {
+    text = text.slice(2);
+    share = true;
+  }
+  const segments = text.split("\\");
+  let root: string;
+  if (share) {
+    const [server, name] = segments;
+    if (!server || !name) return null;
+    // `\\.\C:` and `\\?\...` spell the device namespace, not a share.
+    if (server === "." || server === "?") return null;
+    if (strict && (!plainWindowsName(server) || !plainWindowsName(name, true))) return null;
+    root = `\\\\${server}\\${name}`;
+    segments.splice(0, 2);
+  } else {
+    if (!WINDOWS_DRIVE.test(segments[0] ?? "")) return null;
+    // A bare drive (`C:`, `\\?\C:`) is the drive's current directory (or the volume itself), not its root: `C:\` is absolute.
+    if (segments.length < 2) return null;
+    root = segments[0];
+    segments.shift();
+  }
   const parts: string[] = [];
-  for (const segment of path.split("/")) {
+  for (const segment of segments) {
     if (segment === "" || segment === ".") continue;
     if (segment === "..") return null;
+    if (strict && !plainWindowsName(segment)) return null;
     parts.push(segment);
   }
-  return "/" + parts.join("/");
+  return { root, parts };
+}
+
+const WINDOWS_RESERVED = /^(con|conin\$|conout\$|prn|aux|nul|com[1-9\u00b9\u00b2\u00b3]|lpt[1-9\u00b9\u00b2\u00b3])(\..*)?$/i;
+
+/** Whether `name` is an ordinary Windows file or folder name (see `parseAbsolute`'s `strict`). A share name may end in `$` and is not a device name test. */
+function plainWindowsName(name: string, share = false): boolean {
+  if (/[<>:"|?*\u0000-\u001f]/.test(name)) return false;
+  if (/[. ]$/.test(name)) return false;
+  return share || !WINDOWS_RESERVED.test(name);
+}
+
+function formatAbsolute(path: AbsolutePath, platform: string): string {
+  if (platform !== "windows") return path.parts.length === 0 ? "/" : `/${path.parts.join("/")}`;
+  return [path.root, ...path.parts].join("\\") + (path.parts.length === 0 && WINDOWS_DRIVE.test(path.root) ? "\\" : "");
+}
+
+/** Whether `inner` is `outer` or below it. Windows names compare without regard to case, as its file system does. */
+function isWithin(outer: AbsolutePath, inner: AbsolutePath, platform: string): boolean {
+  const fold = (value: string) => (platform === "windows" ? value.toLowerCase() : value);
+  if (fold(outer.root) !== fold(inner.root) || inner.parts.length < outer.parts.length) return false;
+  return outer.parts.every((part, index) => fold(part) === fold(inner.parts[index]));
+}
+
+/**
+ * `name` inside `parent`, for a file or folder the app addresses by path. POSIX joins with `/`. On Windows a parent
+ * written with backslashes (nsh's `process.dataDir` can be a verbatim `\\?\` path, in which `/` is not a separator and
+ * the sandbox would see one wrong name) is extended with a backslash; a parent written with `/` keeps it.
+ */
+export function childPath(parent: string, name: string, platform: string): string {
+  if (platform === "windows" && parent.includes("\\")) return `${parent.replace(/[\\/]+$/, "")}\\${name}`;
+  return `${parent}/${name}`;
+}
+
+function child(deps: Pick<Deps, "platform">, parent: string, name: string): string {
+  return childPath(parent, name, deps.platform);
 }
 
 export type CredentialLocation = { path: string } | { problem: "home_unset" | "codex_home_outside_codex_dir" };
+
+/** `CODEX_HOME` from the environment. On Windows the variable's name is matched without regard to case, as there. */
+function codexHomeVariable(env: Deps["env"], platform: string): string | undefined {
+  const exact = env.CODEX_HOME;
+  if (exact !== undefined || platform !== "windows") return exact;
+  const key = Object.keys(env).find((name) => name.toUpperCase() === "CODEX_HOME");
+  return key === undefined ? undefined : env[key];
+}
 
 /**
  * Where a provider's credential file is.
@@ -400,26 +555,30 @@ export type CredentialLocation = { path: string } | { problem: "home_unset" | "c
  * `~/.codex` is refused rather than read from somewhere the sandbox does not grant. It is never silently replaced by
  * `~/.codex`, which could be another account.
  *
- * Claude: `~/.claude/.credentials.json`. CODEX_HOME does not apply.
+ * Claude: `~/.claude/.credentials.json`. CODEX_HOME does not apply. (Claude Code on macOS keeps its login in the
+ * Keychain, not in this file; the file is all the app's sandbox grants, see NOTES.md.)
+ *
+ * `platform` is `process.platform`: it picks the path syntax (Windows drive paths, case-blind and either separator,
+ * against POSIX paths). Without it the POSIX rules apply, as on Linux.
  */
-export function credentialLocation(codex: boolean, deps: Pick<Deps, "env" | "homeDir">): CredentialLocation {
-  const home = deps.homeDir ? normalizeAbsolute(deps.homeDir) : null;
-  if (!codex) {
-    if (home === null) return { problem: "home_unset" };
-    return { path: `${home === "/" ? "" : home}/.claude/.credentials.json` };
-  }
-  const codexHome = deps.env.CODEX_HOME;
-  if (codexHome !== undefined && codexHome !== "") {
-    if (home === null) return { problem: "home_unset" };
-    const root = `${home === "/" ? "" : home}/.codex`;
-    const normalized = normalizeAbsolute(codexHome);
-    if (normalized === null || !(normalized === root || normalized.startsWith(`${root}/`))) {
-      return { problem: "codex_home_outside_codex_dir" };
-    }
-    return { path: `${normalized === "/" ? "" : normalized}/auth.json` };
-  }
+export function credentialLocation(
+  codex: boolean,
+  deps: Pick<Deps, "env" | "homeDir"> & Partial<Pick<Deps, "platform">>,
+): CredentialLocation {
+  const platform = deps.platform ?? "linux";
+  const home = deps.homeDir ? parseAbsolute(deps.homeDir, platform) : null;
   if (home === null) return { problem: "home_unset" };
-  return { path: `${home === "/" ? "" : home}/.codex/auth.json` };
+  const file = (path: AbsolutePath, name: string) =>
+    formatAbsolute({ root: path.root, parts: [...path.parts, name] }, platform);
+  if (!codex) return { path: file({ root: home.root, parts: [...home.parts, ".claude"] }, ".credentials.json") };
+  const codexRoot: AbsolutePath = { root: home.root, parts: [...home.parts, ".codex"] };
+  const codexHome = codexHomeVariable(deps.env, platform);
+  if (codexHome !== undefined && codexHome !== "") {
+    const given = parseAbsolute(codexHome, platform, true);
+    if (given === null || !isWithin(codexRoot, given, platform)) return { problem: "codex_home_outside_codex_dir" };
+    return { path: file(given, "auth.json") };
+  }
+  return { path: file(codexRoot, "auth.json") };
 }
 
 /** The access token from credential file text, or null. Codex: `tokens.access_token`; Claude: `claudeAiOauth.accessToken`. */
@@ -685,7 +844,7 @@ function versionPattern(name: ProviderName): RegExp {
 const TEMP_PATTERN = /^snapshot\.(codex|claude)\.(?:[0-9]+-[0-9a-f]+\.)?json\.[0-9a-f-]+\.tmp$|^snapshot\.json\.[0-9a-f-]+\.tmp$/;
 
 function versionPath(deps: Deps, name: ProviderName, ms: number, tag: string): string {
-  return `${snapshotDir(deps)}/snapshot.${name}.${ms}-${tag}.json`;
+  return child(deps, snapshotDir(deps), `snapshot.${name}.${ms}-${tag}.json`);
 }
 
 function storedWindow(v: unknown): UsageWindow | null {
@@ -873,7 +1032,7 @@ async function scanVersions(run: Run, deps: Deps, name: ProviderName): Promise<S
   const trusted: Version[] = [];
   let untrusted = 0;
   for (const n of matching) {
-    const path = `${dir}/${n}`;
+    const path = child(deps, dir, n);
     let kind: Entry["kind"];
     try {
       const info = await run.call(() => deps.fs.stat(path));
@@ -954,9 +1113,9 @@ async function sweepTemporaries(run: Run, deps: Deps, dir: string): Promise<void
   for (const name of names) {
     if (!TEMP_PATTERN.test(name)) continue;
     try {
-      const info = await run.call(() => deps.fs.stat(`${dir}/${name}`));
+      const info = await run.call(() => deps.fs.stat(child(deps, dir, name)));
       if (info !== null && info.kind === "file" && deps.now().getTime() - info.mtimeMs > LOCK_STALE_MS) {
-        await run.call(() => deps.fs.unlink(`${dir}/${name}`));
+        await run.call(() => deps.fs.unlink(child(deps, dir, name)));
       }
     } catch (err) {
       if (codeOf(err) === "timeout") throw err;
@@ -975,7 +1134,7 @@ async function collectGarbage(run: Run, deps: Deps, name: ProviderName): Promise
     // link that appeared since the listing is removed as a link and its target is never touched.
     if (entry.kind !== "file" || keep.has(entry.name) || !versionPattern(name).test(entry.name)) continue;
     try {
-      await run.call(() => deps.fs.unlink(`${dir}/${entry.name}`));
+      await run.call(() => deps.fs.unlink(child(deps, dir, entry.name)));
     } catch (err) {
       if (codeOf(err) === "timeout") throw err;
     }
@@ -1040,7 +1199,7 @@ function missingProvider(untrusted: boolean): ProviderSnapshot {
 async function previousFor(run: Run, deps: Deps, name: ProviderName): Promise<ProviderSnapshot | null> {
   const scan = await scanVersions(run, deps, name);
   if (scan.trusted.length > 0) return ranked(scan.trusted, deps.now().getTime())[0].value;
-  const legacyPath = `${snapshotDir(deps)}/${LEGACY_SNAPSHOT_NAME}`;
+  const legacyPath = child(deps, snapshotDir(deps), LEGACY_SNAPSHOT_NAME);
   const legacy = (await storeTrusted(run, deps))
     ? await readStoredFile(run, deps, legacyPath, parseSnapshot)
     : (await run.call(() => deps.fs.stat(legacyPath))) === null
@@ -1115,7 +1274,7 @@ function isStale(age: number): boolean {
 async function readOwner(call: Call, deps: Deps, lockDir: string): Promise<Owner | null> {
   let text: string;
   try {
-    text = await call(() => deps.fs.readText(`${lockDir}/${OWNER_NAME}`, 4096));
+    text = await call(() => deps.fs.readText(child(deps, lockDir, OWNER_NAME), 4096));
   } catch (err) {
     if (codeOf(err) === "ENOENT") return null;
     throw err;
@@ -1163,7 +1322,7 @@ async function discardDir(deps: Deps, path: string): Promise<void> {
   // Anything other than a directory that we created is left alone.
   if (info.kind !== "dir") return;
   try {
-    await deps.fs.unlink(`${path}/${OWNER_NAME}`);
+    await deps.fs.unlink(child(deps, path, OWNER_NAME));
   } catch (err) {
     if (codeOf(err) !== "ENOENT") throw err;
   }
@@ -1179,7 +1338,7 @@ async function discardDir(deps: Deps, path: string): Promise<void> {
  * replaced the stale one meanwhile), it is put back when the path is free. Whatever is not put back is discarded.
  */
 async function breakStaleLock(run: Run, deps: Deps, dir: string, lockDir: string): Promise<void> {
-  const parked = `${dir}/${LOCK_NAME}.stale-${randomUUID()}`;
+  const parked = child(deps, dir, `${LOCK_NAME}.stale-${randomUUID()}`);
   try {
     await run.call(() => deps.fs.rename(lockDir, parked));
   } catch (err) {
@@ -1199,25 +1358,120 @@ async function breakStaleLock(run: Run, deps: Deps, dir: string, lockDir: string
   await bounded(() => discardDir(deps, parked), RELEASE_GRACE_MS);
 }
 
+/**
+ * Whether `err` is a Windows "in use" refusal that may be about the lock itself or about a transient open handle:
+ * `EPERM`, `EACCES`, `EBUSY`, or the sharing violation (os error 32) that nsh may report with no code at all (its message
+ * ends in `(os error 32)`) or as the number. A code-less error that names no OS error is not one: unlike `isWindowsBusy`
+ * this is not a general "retry anything unknown".
+ */
+function isLockRefusal(err: unknown): boolean {
+  const code = codeOf(err);
+  if (code === "EACCES" || code === "EPERM" || code === "EBUSY") return true;
+  if (typeof err !== "object" || err === null) return false;
+  const raw = (err as { code?: unknown }).code;
+  if (raw === 32 || raw === "32") return true;
+  if (raw !== undefined && raw !== null) return false;
+  const message = (err as { message?: unknown }).message;
+  return typeof message === "string" && /\(os error 32\)/.test(message);
+}
+
+/**
+ * Whether a failed attempt to put the lock in place means "a lock is already there". POSIX rename refuses a non-empty
+ * target with EEXIST or ENOTEMPTY. Windows refuses a rename of a directory onto an existing one with "access denied",
+ * which nsh reports as EACCES (EPERM elsewhere), so there those codes count too, as does a sharing violation; the caller
+ * then looks at the lock and rethrows the error unless a lock is really there.
+ */
+function lockTaken(err: unknown, deps: Pick<Deps, "platform">): boolean {
+  const code = codeOf(err);
+  if (code === "EEXIST" || code === "ENOTEMPTY") return true;
+  return !isPosix(deps) && isLockRefusal(err);
+}
+
+/**
+ * Runs one step of taking the lock under the deadline. When the deadline passes while the step is still pending, the
+ * step cannot be cancelled and may finish later: whether it then succeeds (a lock appears under this run's token) or
+ * fails (a staging directory is left), the run's own leftovers are released once it settles. That release removes only
+ * what carries this run's token, so it can never touch another run's lock, and it is idempotent next to the release
+ * the refresh already made.
+ */
+async function lockStep<T>(run: Run, deps: Deps, token: string, op: () => Promise<T>): Promise<T> {
+  let pending: Promise<T> | undefined;
+  try {
+    return await run.call(() => (pending = op()));
+  } catch (err) {
+    if (pending !== undefined && isDeadlineFailure(err, run)) {
+      const late = () => releaseLock(token, deps).catch(() => undefined);
+      pending.then(late, late);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Puts the staged lock in place. Where Windows refuses the rename only because a program holds an entry open for a
+ * moment, it is repeated after the short `BUSY_RETRY_MS` waits. Nothing here can displace another run's lock: the rename
+ * onto an existing, non-empty lock directory always fails, and a refusal is never retried while a lock is in place (that
+ * refusal is the answer, and the caller judges the lock). Only a refusal with no lock in place is waited out, then the
+ * same staged directory is renamed again. After the last retry the error is thrown.
+ *
+ * Returns null once the lock is in place. When a refusal is met while a lock is there, that refusal is returned (not
+ * thrown) as `{ refusal }`: a competitor was observed, so the caller must not read a later "gone" as "no lock was ever
+ * there" (the competitor may have released in between) and must loop to take the lock again instead.
+ */
+async function placeLock(
+  run: Run,
+  deps: Deps,
+  token: string,
+  staging: string,
+  lockDir: string,
+): Promise<{ refusal: unknown } | null> {
+  const windows = !isPosix(deps);
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await lockStep(run, deps, token, () => deps.fs.rename(staging, lockDir));
+      return null;
+    } catch (err) {
+      const wait = BUSY_RETRY_MS[attempt];
+      if (!windows || wait === undefined || isDeadlineFailure(err, run) || !isLockRefusal(err)) throw err;
+      if ((await run.call(() => deps.fs.stat(lockDir))) !== null) return { refusal: err };
+      await run.call(() => sleep(wait));
+    }
+  }
+}
+
 /** Takes the lock for `token`, or returns false when a fresh lock is held. */
 async function acquireLock(run: Run, deps: Deps, token: string): Promise<boolean> {
   const dir = snapshotDir(deps);
   await run.call(() => deps.fs.mkdir(dir));
-  const lockDir = `${dir}/${LOCK_NAME}`;
-  const staging = `${dir}/${LOCK_NAME}.new-${token}`;
+  const lockDir = child(deps, dir, LOCK_NAME);
+  const staging = child(deps, dir, `${LOCK_NAME}.new-${token}`);
   for (let attempt = 0; attempt < 3; attempt++) {
+    let ambiguous: unknown = null;
+    // Set when the lock was seen in place after a refusal: a later "gone" then means the holder let go, not that the refusal was bogus.
+    let competitor = false;
     try {
-      await run.call(() => deps.fs.mkdirExclusive(staging));
-      await run.call(() => deps.fs.writeText(`${staging}/${OWNER_NAME}`, JSON.stringify({ token, started: deps.now().getTime() })));
-      await run.call(() => deps.fs.rename(staging, lockDir));
-      return true;
+      await lockStep(run, deps, token, () => deps.fs.mkdirExclusive(staging));
+      await lockStep(run, deps, token, () =>
+        deps.fs.writeText(child(deps, staging, OWNER_NAME), JSON.stringify({ token, started: deps.now().getTime() })),
+      );
+      const placed = await placeLock(run, deps, token, staging, lockDir);
+      if (placed === null) return true;
+      await bounded(() => discardDir(deps, staging), RELEASE_GRACE_MS);
+      ambiguous = placed.refusal;
+      competitor = true;
     } catch (err) {
       await bounded(() => discardDir(deps, staging), RELEASE_GRACE_MS);
       if (codeOf(err) === "timeout") throw err;
-      if (codeOf(err) !== "EEXIST" && codeOf(err) !== "ENOTEMPTY") throw err;
+      if (!lockTaken(err, deps)) throw err;
+      // EACCES and the like on Windows can be a real permission failure: that is only a held lock if one is there.
+      if (codeOf(err) !== "EEXIST" && codeOf(err) !== "ENOTEMPTY") ambiguous = err;
     }
     const state = await lockState(run.call, deps, lockDir);
-    if (state.kind === "gone") continue;
+    if (state.kind === "gone") {
+      if (ambiguous !== null && !competitor) throw ambiguous;
+      continue;
+    }
     if (!isStale(state.age)) return false;
     await breakStaleLock(run, deps, dir, lockDir);
   }
@@ -1227,12 +1481,14 @@ async function acquireLock(run: Run, deps: Deps, token: string): Promise<boolean
 /** Releases the lock if its owner is still `token`, and discards this run's staging directory. Never throws. */
 async function releaseLock(token: string, deps: Deps): Promise<void> {
   const dir = snapshotDir(deps);
-  const lockDir = `${dir}/${LOCK_NAME}`;
+  const lockDir = child(deps, dir, LOCK_NAME);
   await bounded(async () => {
     const owner = await readOwner(direct, deps, lockDir);
     if (owner === null || owner.token !== token) return;
-    const parked = `${dir}/${LOCK_NAME}.stale-${randomUUID()}`;
-    await deps.fs.rename(lockDir, parked);
+    const parked = child(deps, dir, `${LOCK_NAME}.stale-${randomUUID()}`);
+    // Windows can refuse this while the lock's owner file is still open (a scanner, an indexer): retry a few times. A
+    // rename that still fails is left to the stale rule, as before.
+    await retryWhileBusy(() => deps.fs.rename(lockDir, parked), !isPosix(deps), deps.sleep);
     const moved = await readOwner(direct, deps, parked);
     if (moved !== null && moved.token !== token) {
       try {
@@ -1244,7 +1500,7 @@ async function releaseLock(token: string, deps: Deps): Promise<void> {
     }
     await discardDir(deps, parked);
   }, RELEASE_GRACE_MS);
-  await bounded(() => discardDir(deps, `${dir}/${LOCK_NAME}.new-${token}`), RELEASE_GRACE_MS);
+  await bounded(() => discardDir(deps, child(deps, dir, `${LOCK_NAME}.new-${token}`)), RELEASE_GRACE_MS);
 }
 
 /** Discards leftover displaced and staging lock directories that are older than the stale margin. Under the lock. */
@@ -1260,8 +1516,8 @@ async function sweepLockLeftovers(run: Run, deps: Deps): Promise<void> {
   for (const name of names) {
     if (!LOCK_LEFTOVER.test(name)) continue;
     try {
-      const info = await run.call(() => deps.fs.stat(`${dir}/${name}`));
-      if (info !== null && deps.now().getTime() - info.mtimeMs > LOCK_STALE_MS) await discardDir(deps, `${dir}/${name}`);
+      const info = await run.call(() => deps.fs.stat(child(deps, dir, name)));
+      if (info !== null && deps.now().getTime() - info.mtimeMs > LOCK_STALE_MS) await discardDir(deps, child(deps, dir, name));
     } catch (err) {
       if (codeOf(err) === "timeout") throw err;
     }
@@ -1395,7 +1651,7 @@ async function legacyCheck(run: Run, deps: Deps): Promise<DoctorCheck> {
   if (deps.dataDir === null) return { name: "legacy_snapshot", status: "ok", detail: "no data directory" };
   let info: FileStat | null;
   try {
-    info = await run.call(() => deps.fs.stat(`${snapshotDir(deps)}/${LEGACY_SNAPSHOT_NAME}`));
+    info = await run.call(() => deps.fs.stat(child(deps, snapshotDir(deps), LEGACY_SNAPSHOT_NAME)));
   } catch (err) {
     if (codeOf(err) === "timeout") throw err;
     return { name: "legacy_snapshot", status: "fail", detail: `cannot inspect the legacy snapshot (${codeOf(err) ?? "error"})` };

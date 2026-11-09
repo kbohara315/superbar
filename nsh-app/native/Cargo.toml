@@ -1,0 +1,39 @@
+[package]
+name = "superbar-native"
+description = "Superbar's Windows system metrics: a narrow, typed, in-process Rust module (no subprocess)."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Not part of any parent workspace: nsh writes its own workspace under ../.nsh/rust.
+[workspace]
+
+[lints.rust]
+missing_docs = "warn"
+unreachable_pub = "deny"
+
+[dependencies]
+# Where nsh's crates come from: the public nsh repository, pinned to one exact commit (0.4.0 plus the `Tray` API this
+# app needs, which the 0.4.0 crates.io release lacks). Both crates must name the same repository and rev: `nsh`
+# (`rust_app::Nsh::of`) requires the app's crates and the running `nsh` to use one source, and a Git source is accepted
+# only when the checkout's version equals the running `nsh`'s (build `nsh` from this same commit). To move to another
+# nsh, change both `rev`s together; with a released nsh that has `Tray`, use `version = "=<nsh version>"` for both.
+nsh-core = { git = "https://github.com/longbridge/nsh", rev = "0e4a20bd41ee72a35515cecbf9a7fba88742d911" }
+nsh-base = { git = "https://github.com/longbridge/nsh", rev = "0e4a20bd41ee72a35515cecbf9a7fba88742d911" }
+
+# Win32 bindings, Windows only (nothing is compiled or linked elsewhere). One feature per API family used in
+# src/platform/windows.rs.
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.61"
+features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Power",
+  "Win32_System_ProcessStatus",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+]

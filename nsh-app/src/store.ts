@@ -16,7 +16,11 @@
 //
 // Privacy, as for the snapshot (providers.ts): on POSIX the data directory must be 0700 and the file 0600 with no group
 // or other bits, checked with lstat. nsh's lstat reports modes and types but not ownership, so a folder owned by another
-// user is not detected here. Reads never follow a symlink and never trust a non-regular entry. Windows skips the modes.
+// user is not detected here. Reads never follow a symlink and never trust a non-regular entry. Windows skips the modes
+// (its per-user data directory carries the protection; nsh grants no way to read or set ACLs, so that is not checked),
+// uses the folder's own separator when it
+// builds a child path (nsh's data directory can be a verbatim `\\?\` path, where `/` separates nothing) and retries a
+// rename that Windows refuses while the target is open elsewhere.
 //
 // Every port is injectable so tests can run it against an in-memory file system.
 
@@ -24,6 +28,7 @@ import * as fsPromises from "fs/promises";
 import process from "process";
 import { randomUUID } from "crypto";
 import type { SettingsRead, StorePort } from "./controller";
+import { childPath, retryWhileBusy } from "./providers";
 
 export const SETTINGS_FILE = "settings.json";
 export const SETTINGS_INSECURE = "settings_insecure";
@@ -62,17 +67,23 @@ export type ChmodRunner = (mode: string, path: string) => Promise<{ code: number
 export interface SettingsStoreDeps {
     fs: SettingsFs;
     chmod: ChmodRunner;
-    /** `process.platform`. Anything but `windows` is POSIX, where modes are enforced (as in providers.ts). */
+    /** `process.platform` (nsh's names: `linux`, `macos`, `windows`). Anything but `windows` is POSIX, where modes are enforced (as in providers.ts). */
     platform: string;
     /** A new unique id for each temporary file: lowercase hex and dashes (see TEMP_NAME). */
     newName(): string;
     /** The wall clock in milliseconds: for the orphan sweep's age test. */
     now(): number;
+    /** Waits `ms` milliseconds: between the retries of a rename Windows refuses while another program has the file open. Default: a timer. */
+    sleep?(ms: number): Promise<void>;
     /**
      * The queue this store uses. Default: the process-wide queue of the data directory, so every store of one folder in
      * this process is ordered together. A test can pass its own queue to model a second instance.
      */
     queue?: SerialQueue;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+    return new Promise<void>(resolve => setTimeout(resolve, ms));
 }
 
 export function defaultSettingsStoreDeps(): SettingsStoreDeps {
@@ -112,6 +123,7 @@ export function defaultSettingsStoreDeps(): SettingsStoreDeps {
         platform: process.platform,
         newName: () => randomUUID(),
         now: () => Date.now(),
+        sleep: defaultSleep,
     };
 }
 
@@ -240,6 +252,15 @@ async function restrict(path: string, mode: string, expectDirectory: boolean, de
     }
 }
 
+// Renames `temp` over the settings file. POSIX replaces atomically. Windows replaces too, but refuses while another
+// program (an indexer, a virus scanner, an editor) has the target open without sharing: nsh reports that as EPERM, EACCES
+// or EBUSY, or, for ERROR_SHARING_VIOLATION (os error 32), which Node has no name for, with no code at all. That clears
+// within moments, so Windows retries a few times with short waits (providers.ts `retryWhileBusy`). Any other failure, or
+// the last one, is thrown.
+async function renameOver(from: string, to: string, deps: SettingsStoreDeps): Promise<void> {
+    await retryWhileBusy(() => deps.fs.rename(from, to), !isPosix(deps), deps.sleep ?? defaultSleep);
+}
+
 // ----- write ----------------------------------------------------------------------------------------------------------
 
 async function writeAtomic(dir: string, text: string, deps: SettingsStoreDeps): Promise<void> {
@@ -251,12 +272,12 @@ async function writeAtomic(dir: string, text: string, deps: SettingsStoreDeps): 
     }
     const id = deps.newName();
     if (!/^[0-9a-f-]+$/.test(id)) throw new Error("temporary file ids must be lowercase hex and dashes");
-    const temp = `${dir}/${SETTINGS_FILE}.${id}.tmp`;
+    const temp = childPath(dir, `${SETTINGS_FILE}.${id}.tmp`, deps.platform);
     try {
         // From here on the temporary file may exist, so any failure removes it (a write may stop part-way).
         await deps.fs.writeText(temp, text);
         if (isPosix(deps)) await restrict(temp, "600", false, deps);
-        await deps.fs.rename(temp, `${dir}/${SETTINGS_FILE}`);
+        await renameOver(temp, childPath(dir, SETTINGS_FILE, deps.platform), deps);
     } catch (error) {
         await deps.fs.unlink(temp).catch(() => undefined);
         throw error;
@@ -280,7 +301,7 @@ async function sweepTemporaries(dir: string, deps: SettingsStoreDeps): Promise<v
     }
     for (const name of names) {
         if (!TEMP_NAME.test(name)) continue;
-        const path = `${dir}/${name}`;
+        const path = childPath(dir, name, deps.platform);
         try {
             const info = await deps.fs.lstat(path);
             if (info !== null && info.file && !info.symlink && deps.now() - info.mtimeMs >= SWEEP_AGE_MS) {
@@ -301,7 +322,7 @@ async function readSettings(dir: string, deps: SettingsStoreDeps): Promise<Setti
         if (folder.symlink || !folder.directory) return untrusted("the settings folder is not a folder");
         if (isPosix(deps) && (folder.mode & 0o777) !== 0o700) return untrusted("the settings folder is not private");
         await sweepTemporaries(dir, deps);
-        const path = `${dir}/${SETTINGS_FILE}`;
+        const path = childPath(dir, SETTINGS_FILE, deps.platform);
         const info = await deps.fs.lstat(path);
         if (info === null) return { kind: "missing" };
         if (info.symlink || !info.file) return untrusted("settings.json is not a regular file");
