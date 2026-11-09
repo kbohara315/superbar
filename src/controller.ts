@@ -1,7 +1,7 @@
 // The app's state and scheduler. Everything with a side effect (providers, metric samplers, timers, notifications,
 // the settings file, the clocks) comes in through `ControllerDeps`, so the logic runs under test with fakes.
 //
-// State is held in nsh signals; views read them and re-render. Behaviour follows ../../docs/usage.md:
+// State is held in nsh signals; views read them and re-render. Behaviour follows ../docs/usage.md:
 // provider refresh with rate-limit backoff, a 40-second fetch timeout, last-good values kept on failure, metric
 // sampling on per-metric intervals, usage and disk alerts, and burn-rate samples kept in memory.
 //
@@ -65,7 +65,7 @@ export type ProcessMetric = "cpu" | "memory";
 export interface ProcessList { metric: ProcessMetric | null; rows: ProcessEntry[] | null }
 export interface PaceSample { t: number; percent: number; resetAt: string }
 
-// Provider fetches get this long before the UI gives up on them (the extension's FETCH_TIMEOUT_MS).
+// Provider fetches get this long before the UI gives up on them.
 export const FETCH_TIMEOUT_MS = 40_000;
 // Bounds for the other external calls. A metric sample or process list that takes longer is abandoned for that tick.
 export const SAMPLE_TIMEOUT_MS = 15_000;

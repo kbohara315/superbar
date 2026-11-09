@@ -59,7 +59,7 @@ test("network takes two readings and excludes loopback and virtual interfaces", 
   expect(value.history).toEqual([4096]);
 });
 
-test("network rate text and capsule form match extension thresholds and raw-rate rounding", async () => {
+test("network rate text and tray summary form match thresholds and raw-rate rounding", async () => {
   const readingAtRate = async (kbPerSecond: number): Promise<MetricReading> => {
     const f = new Fixtures(); let now = 0;
     const network = new MetricsSampler("network", f, () => now, undefined, "linux");

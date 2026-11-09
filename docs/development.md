@@ -1,50 +1,54 @@
 # Development
 
-## Requirements and build
+## Toolchain
 
-Use Zig 0.17.0 or later. The build defaults to size optimization and strips debug information.
+This app uses `nsh` and a native Rust crate in `native/`. The crate pins `nsh-core` and `nsh-base` to commit [`0e4a20bd41ee72a35515cecbf9a7fba88742d911`](https://github.com/longbridge/nsh/commit/0e4a20bd41ee72a35515cecbf9a7fba88742d911). Use an `nsh` build from the same commit: it contains the `Tray` API used by this app. The released `nsh 0.4.0` has the same version string but a different commit and does not provide that API.
 
-```sh
-zig build
-zig build test
-```
+The first Rust build needs network access to fetch the pinned nsh repository and crates.io dependencies. The generated `.nsh/` directory and Rust `target/` output are local build artifacts and are ignored by Git.
 
-`zig build test` runs Zig unit tests and the isolated CLI integration test. It does not contact real provider endpoints. Extension tests are standalone Node.js scripts:
+## Check and test
 
-```sh
-node extension/tests/model.test.js
-node extension/tests/indicator.test.js
-```
-
-Current Node.js releases detect ES module syntax automatically. Older Node.js versions need `node --experimental-default-type=module` instead.
-
-The extension tests use Node mocks for GNOME Shell objects; they do not run inside GNOME Shell.
-
-Build variants can be selected with Zig's `-Doptimize` option:
+Run from the repository root with the matching `nsh` executable on `PATH`:
 
 ```sh
-zig build -Doptimize=debug
-zig build -Doptimize=safe -Dstrip=false
-zig build -Doptimize=fast
+nsh check
+nsh test
+nsh run App.tsx
 ```
 
-Debug builds are unoptimized. Safe builds retain safety checks; `-Dstrip=false` preserves debug information. Fast builds prioritize runtime speed.
+`nsh test` runs the app's headless TSX tests and the native crate's unit tests. The TSX tests use fakes for host APIs and do not require a display. `nsh run` starts the desktop app and needs a graphical session.
 
-## Install and runtime validation
-
-Build before running the installer:
+The native crate can also be checked directly:
 
 ```sh
-scripts/install.sh
+cargo fmt --manifest-path native/Cargo.toml -- --check
+cargo test --manifest-path native/Cargo.toml --locked
 ```
 
-The installer places the CLI at `~/.local/bin/superbar` and the extension at `~/.local/share/gnome-shell/extensions/superbar@kbohara315.github.io`. It records managed file hashes in an install manifest and refuses to overwrite unknown or modified files. Enable Superbar in the GNOME Extensions app. Uninstall with `scripts/uninstall.sh`; it removes only files verified against the manifest.
+The Windows module can be type-checked from Linux with the GNU target and MinGW-w64 installed:
 
-Automated tests cover the CLI and extension behavior through mocks. The installer and uninstaller do not currently have automated tests. A passing mock test is not a substitute for validating the extension in a live GNOME Shell 50 Wayland session. If GNOME does not discover a newly installed extension, sign out and back in after saving your work. Do not restart GNOME Shell on Wayland as a workaround.
+```sh
+cargo check --manifest-path native/Cargo.toml --locked --target x86_64-pc-windows-gnu
+```
+
+This is a cross-target compile check, not a Windows runtime test. macOS and Windows tray, window, credential, and live-metric behavior must still be checked on their respective hosts.
+
+## Package
+
+Package on the operating system being targeted:
+
+```sh
+nsh package --target linux
+nsh package --target windows
+nsh package --target macos
+```
+
+The Windows and macOS package commands require their respective native hosts. In particular, this nsh version builds the Windows runner for the host target; running `nsh package --target windows` on Linux can create an ELF binary named `Superbar.exe`, which is not a Windows application.
 
 ## Project layout
 
-- `src/`: Zig CLI, provider fetching, and runtime snapshot storage.
-- `extension/`: GNOME Shell extension, preferences, settings schema, and tests.
-- `scripts/`: per-user installer and uninstaller.
-- `tests/`: isolated CLI integration test.
+- `App.tsx`: nsh desktop entry point and host API wiring.
+- `src/`: provider fetching, metrics, state management, tray, and dashboard UI.
+- `native/`: narrow Rust module for Windows system metrics.
+- `nsh.json`: app identity and nsh capabilities. Review capability changes carefully; the native Rust module runs in-process outside the TSX capability sandbox.
+- `docs/usage.md`: user-facing behavior and settings.

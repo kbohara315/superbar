@@ -522,7 +522,7 @@ export function metricLevel(reading: MetricReading, diskThreshold: number): "nor
   return (reading.percent ?? 0) >= (reading.name === "disk" ? diskThreshold : 90) ? "high" : "normal";
 }
 
-/** Compact system-metric text for the top-bar capsule, matching the GNOME extension. */
+/** Compact system-metric text for the tray summary. */
 export function shortMetricText(reading: MetricReading): string {
   if (!reading.available) return "—";
   switch (reading.name) {

@@ -1,5 +1,5 @@
 // Shared contract between providers.ts, model.ts, metrics.ts and ui/*.
-// Mirrors the Superbar snapshot schema v1 (see ../docs/cli.md). Do not change without the coordinator.
+// Shared contract for the app's versioned provider snapshot and metric readings.
 
 export type ProviderName = "codex" | "claude";
 export type ProviderState = "fresh" | "stale" | "unavailable";

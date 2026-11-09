@@ -1,5 +1,4 @@
-// Provider layer of Superbar on nsh. Port of the Zig CLI's fetch, parse, carry-forward, expiry and doctor logic
-// (../../src/main.zig and ../../src/store.zig). It reads the local CLI credentials, asks the Codex and Claude usage
+// Provider layer of Superbar on nsh. It reads the local CLI credentials, asks the Codex and Claude usage
 // endpoints for the current windows, and keeps its snapshots as versioned files in ${dataDir}
 // (snapshot.<provider>.<writtenAtMs>-<tag>.json; see the Snapshot store section).
 //
@@ -37,7 +36,7 @@ import { credentialExpiryIso } from "./model";
 export const MAX_CREDENTIAL_BYTES = 64 * 1024;
 export const MAX_RESPONSE_BYTES = 256 * 1024;
 export const MAX_SNAPSHOT_BYTES = 256 * 1024;
-// Overall budget for one refresh, from the start of the lock to the save, as the Zig fetch worker's deadline.
+// Overall budget for one refresh, from the start of the lock to the save.
 export const FETCH_DEADLINE_MS = 35_000;
 // A lock older than the deadline plus this margin cannot belong to a live run, so it is broken. The margin is large
 // so that a wall-clock step forward of less than two minutes cannot make a live lock look stale.
@@ -55,7 +54,7 @@ const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_BETA = "oauth-2025-04-20";
 const USER_AGENT = "superbar/1.0";
 const MAX_WINDOW_SECONDS = 31536000;
-const MAX_EPOCH_SECONDS = 253402300799; // 9999-12-31T23:59:59Z, as the Zig epoch conversion bounds it
+const MAX_EPOCH_SECONDS = 253402300799; // 9999-12-31T23:59:59Z
 const CODEX_HOME_MESSAGE = "CODEX_HOME must point inside ~/.codex, the only Codex directory the app sandbox can read";
 const STORAGE_INSECURE: ProviderError = {
   code: "storage_insecure",
@@ -371,7 +370,7 @@ function numberField(v: unknown, name: string): number | null {
   return typeof x === "number" && Number.isFinite(x) ? x : null;
 }
 
-/** A non-empty string field, or null, as the Zig `fieldString` returns. */
+/** A non-empty string field, or null. */
 function stringField(v: unknown, name: string): string | null {
   const x = objectField(v, name);
   return typeof x === "string" && x !== "" ? x : null;
@@ -396,7 +395,7 @@ export function epochIso(seconds: number): string | null {
 export function parseWindow(v: unknown, label: string, fallbackDuration: number | null): UsageWindow | null {
   const percent = numberField(v, "utilization") ?? numberField(v, "used_percent");
   if (percent === null || percent < 0 || percent > 100) return null;
-  // A present resets_at wins even when it is null, as the Zig `field` lookup does.
+  // A present resets_at wins even when it is null.
   const resetValue = isObject(v) && Object.hasOwn(v, "resets_at") ? v.resets_at : objectField(v, "reset_at");
   const resetAt = typeof resetValue === "string" ? resetValue : typeof resetValue === "number" ? epochIso(resetValue) : null;
   const limit = numberField(v, "limit_window_seconds");
@@ -1530,7 +1529,7 @@ async function sweepLockLeftovers(run: Run, deps: Deps): Promise<void> {
 
 /**
  * Refreshes the selected providers, each as a new version, under the best-effort lock and the deadline. A refresh that
- * finds a fresh lock returns `{ status: "busy" }` and changes nothing (the Zig CLI's exit status 75). A refresh past its
+ * finds a fresh lock returns `{ status: "busy" }` and changes nothing. A refresh past its
  * deadline rejects with a `timeout` error. When a provider's snapshot cannot be kept private, the result still carries
  * the snapshot, with `storage` set.
  */

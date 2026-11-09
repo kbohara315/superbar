@@ -1,4 +1,4 @@
-// Metric icons as SVG data URIs (the paths of the GNOME extension's icons), drawn in the metric's colour.
+// Metric icons as SVG data URIs, drawn in each metric's colour.
 
 import type { ImageAsset } from "nsh";
 import type { MetricName, ProviderName } from "../types";

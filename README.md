@@ -1,31 +1,25 @@
 # Superbar
 
-Superbar is a GNOME top-bar dashboard for Codex and Claude Code usage, with optional Linux system metrics. It includes a GNOME Shell extension and a Zig CLI that fetches provider usage and reads the cached snapshot.
+Superbar is a tray-resident desktop dashboard for Codex and Claude Code usage, with optional system metrics. It is a native TSX app built with [nsh](https://github.com/longbridge/nsh).
 
-The target is GNOME Shell 50 on Wayland. Provider data comes from upstream usage endpoints that may change and are not guaranteed stable public APIs.
+The app has a tray icon and menu, a usage dashboard, configurable refresh and alert settings, and a local setup checker. Provider credentials are read from the signed-in user's existing Codex and Claude Code files; access tokens are sent only in provider requests and are not stored by Superbar.
 
-## Install
+## Run
 
-Requires Zig 0.17.0 and GNOME Shell 50.
-
-```sh
-zig build
-scripts/install.sh
-```
-
-Enable **Superbar** in the GNOME Extensions app. If it does not appear after installation, sign out and back in; save your work first. To uninstall:
+Use an `nsh` build containing the `Tray` API at commit [`0e4a20b`](https://github.com/longbridge/nsh/commit/0e4a20bd41ee72a35515cecbf9a7fba88742d911), then run from this directory:
 
 ```sh
-scripts/uninstall.sh
+nsh check
+nsh test
+nsh run App.tsx
 ```
 
-The installer and uninstaller manage per-user files under `~/.local` and refuse to overwrite or remove files they cannot verify as managed by Superbar.
+See [Development](docs/development.md) for the matching nsh toolchain, tests, and packaging details. See [Usage](docs/usage.md) for dashboard behavior and settings.
 
-## Development
+## Platforms
 
-```sh
-zig build
-zig build test
-```
+The app contains Linux, Windows, and macOS code paths. Linux is the validated desktop host. Windows Rust code has also passed a GNU cross-target check, but Windows and macOS runtime behavior still needs testing on those operating systems. Package each desktop app on its native host; in particular, `nsh package --target windows` run on Linux can produce a Linux executable named `.exe`.
 
-See [Development](docs/development.md) for test coverage and build options. For user-facing behavior, see [Usage](docs/usage.md); for CLI commands and data handling, see [CLI reference](docs/cli.md).
+## License
+
+See [LICENSE](LICENSE).

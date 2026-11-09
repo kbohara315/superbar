@@ -1,5 +1,5 @@
 // The dashboard window's root: the header, then the usage or settings screen. Closing the window (the user's close,
-// which unmounts it) returns the next opening to the usage screen, as the extension's menu does.
+// which unmounts it) returns the next opening to the usage screen.
 
 import { cleanup, Text, View } from "nsh";
 import type { Controller } from "../controller";

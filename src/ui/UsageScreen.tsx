@@ -12,7 +12,7 @@ function WindowRowItem(props: { controller: Controller; name: ProviderName; kind
     const c = props.controller;
     const brand = brandColor(props.name);
     const window = (): UsageWindow | null => c.snapshot()?.providers[props.name].windows[props.kind] ?? null;
-    // Without any snapshot the row shows placeholders, as the extension does until its first render.
+    // Without any snapshot the row shows placeholders until the first provider refresh completes.
     const row = (): WindowRowView | null => (c.snapshot() ? windowRow(window(), c.now(), displayMode(c.settings().showRemaining), brand) : null);
     const pace = () => c.paceLine(props.name, props.kind, window());
     return (

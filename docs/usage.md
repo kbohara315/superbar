@@ -1,65 +1,53 @@
 # Usage
 
-Superbar adds provider usage pills and optional system metrics to the GNOME top bar. The menu contains provider cards, enabled metric tiles, and a settings screen.
+Superbar runs in the desktop tray and opens its own dashboard. The tray icon shows one gauge per enabled provider; its menu offers quick status, refresh, setup-check, dashboard, hide, and quit actions. A primary click opens the dashboard. The app can also run without a tray, in which case its main window remains available.
 
 ## Provider usage
 
-The panel shows one pill per enabled provider with its icon. The pill's number is the **5-hour (primary) window only**: by default its remaining percentage (a 5-hour window at 2% used shows `98%`), or its used percentage with the display setting off (`2%`). The weekly window never changes the number. If the 5-hour window is missing or has reset, the pill shows `—`.
+The dashboard shows a card for each enabled provider. A card includes the live, stale, or offline state, last successful sync, access-token expiry when available, safe error details, and both usage windows. Each window shows its percentage, reset countdown or local reset time when supplied, and a progress bar. The primary window is usually the 5-hour limit; the secondary is usually weekly, but labels depend on provider data.
 
-The pill turns red when **either** window reaches 90% used, so a nearly exhausted weekly limit is still visible. When that red comes from the weekly window while the 5-hour number is healthy, the pill appends ` wk!`, for example `98% wk!`. A red pill with a plain number means the 5-hour window itself is at 90% used or more. Codex uses green and Claude Code orange otherwise. The colour is always decided on used percentage, so red means the same thing in both modes. Both windows are listed on the provider card in the menu. Stale provider data is dimmed.
+The tray gauge represents the **primary (usually 5-hour) window**. By default it shows remaining usage (a window with 2% used reads 98%); turn off **Show remaining usage** to show used usage instead. A high alert is shown when either provider window reaches 90% used. When only the secondary window is high, the tray summary marks it with `wk!`. Missing or reset primary usage has no gauge value. Stale data is dimmed. Tray colors may be reduced to a single foreground color on macOS and Windows, where the desktop draws template icons; the different gauge shapes still distinguish normal, high, and missing values.
 
-**Show remaining usage (off = show used)** in the menu's settings screen, or in the Usage group of the preferences window, switches every Codex and Claude Code percentage to used. It is on by default. The pill, the card percentages, the usage bars, the alert wording and the `status --line` output all follow it. The bars fill with the amount shown: with remaining, a fresh window is full and empties as you use it. System metric percentages are unaffected.
+After at least three samples spanning ten minutes, a usage window can show a burn-rate estimate: when the current pace would exhaust it before reset, Superbar shows an estimated time; otherwise it says it is safe until reset. These samples stay in memory and are cleared on app restart or when the provider window resets.
 
-Each provider card shows its live, stale, or offline state, last successful sync time, and, when the credential file records one, the access-token expiry. It is read from the credential file on each render, so a token that Claude Code or Codex renewed since the last fetch is shown correctly. The card says `token expires in 20m`. An expired access token is normal, because the CLI renews it on next use, so the card says `token renews on next use`. Only when the last refresh failed with `authentication_required` does it say `token expired · sign in again`. If the credential file is missing, the card falls back to the expiry saved with the last fetch. If the last refresh left an error, a reason line shows the safe error code and a fix hint, for example `authentication_required: Run `claude` to sign in again`, `rate_limited: Rate limited; retrying with backoff`, or `response_invalid: Provider API may have changed`. Each card also shows its primary and secondary usage windows. Each window includes its percentage (`20% left`, or `80% used` with the setting off), a usage bar, and reset countdown/local reset time when the provider supplies one. The primary window is typically the 5-hour limit; the secondary is typically weekly, though labels and availability depend on provider data.
+Use a card's refresh button to refresh one provider. The dashboard refresh button or tray's **Refresh now** action refreshes both providers and samples enabled metrics. The tray menu also offers per-provider refresh actions. A failed refresh keeps the last successful values and marks them stale or shows an error. Full automatic refresh backs off after rate limiting, doubling from the configured interval up to 15 minutes; a successful full refresh restores the normal interval. Manual refresh remains available during backoff.
 
-A window whose reset time has passed no longer describes a current period. It shows `reset · usage unknown` (or `reset passed · awaiting data`), has an empty bar, and does not count toward the pill until fresh data arrives.
-
-After at least three samples spanning ten minutes, a window shows a burn-rate line: `at this pace the limit runs out at HH:MM (resets HH:MM)` when it would reach 100% used before its reset, or `safe until reset` otherwise. The wording is the same in both display modes. Samples are kept only in memory for the current reset period, so the line disappears after a reset and after a restart.
-
-Use the refresh button on a provider card to refresh only that provider. The menu header refresh button fetches both providers and samples enabled metrics. If a fetch fails, the extension keeps the last successful values and marks the failure. The header then says `Refresh busy` when another refresh already holds the runtime lock, `Refresh timed out` when the fetch timed out, and `Refresh failed` otherwise. If there is no previous snapshot, provider values show unavailable.
-
-Automatic provider refresh backs off after rate limiting. Each consecutive full refresh (the timer, or the header refresh button) that reports `rate_limited` doubles the interval (for example 60s, then 120s, 240s, and so on), capped at 15 minutes. A full refresh without rate limiting restores the normal interval. Manual refreshes still run during a backoff; a card refresh button refreshes one provider and does not change the backoff.
-
-Run `superbar doctor` from a terminal to check the runtime directory and credential files; see the [CLI reference](cli.md).
+Superbar reads the existing Codex and Claude Code credentials from the user's home directory. It does not display or persist access-token values. On macOS, Claude Code credentials stored only in Keychain are not currently supported; the file-based credential path is required.
 
 ## Alerts
 
-Superbar sends GNOME notifications for:
+When **Usage and disk alerts** is enabled, Superbar can send desktop notifications for:
 
-- a provider usage window reaching 80% or 90% used (the thresholds are always judged on used; the message reads `Claude Code 5-hour: 20% left` or `80% used` to match the display setting);
-- a provider usage window resetting, when it had some usage before the reset;
-- disk usage reaching the disk alert threshold.
+- provider usage windows reaching 80% or 90% used;
+- a provider window resetting after it had recorded usage;
+- disk usage reaching the configured threshold.
 
-Each threshold fires once per window period. Only fresh provider data raises a usage alert, so carried-forward values never do. Disk alerts fire once when usage reaches the threshold and re-arm when usage falls below it. Disk alerts need the Disk metric to be enabled, since its samples come from the regular disk reading.
-
-Turn notifications off with **Usage and disk alerts** in the menu's settings screen, or the **Usage and disk notifications** switch in the Alerts group of the preferences window. The disk threshold defaults to 90% used and is set in the preferences window (50–99%).
+Usage thresholds are always calculated from the amount used, regardless of whether the UI shows remaining or used percentages. Each usage threshold fires once per window period. Only fresh provider data raises a usage alert. Disk alerts fire once when usage reaches the threshold and re-arm after it falls below. Disk alerts require the Disk metric to be enabled. The disk threshold defaults to 90% and can be set from 50% to 99% in Settings.
 
 ## System metrics
 
-System metrics are off by default. Enable them in the menu's settings screen or the Superbar preferences window in GNOME Extensions. Enabled metrics appear together in a compact top-bar capsule and as tiles in the menu. Tiles are arranged in two columns; network uses a full row. Clicking a tile samples that metric immediately.
+Metrics are disabled by default. Enable individual metrics in **Settings**; they appear as dashboard tiles and compact status text in the tray menu. Clicking a tile samples it immediately. CPU and memory tiles can be opened to see their top five processes.
 
 | Metric | Display |
 |---|---|
 | CPU | Usage percentage and a short history sparkline |
 | Memory | Used amount, total amount, and percentage |
 | Swap | Used amount, total amount, and percentage |
-| Disk | Root filesystem usage and free space |
+| Disk | System-volume usage and free space, with a trend-based time-to-full estimate when enough samples exist |
 | Network | Receive/transmit rates and a short history sparkline |
-| Battery | Capacity and charging status when available |
-| Temperature | Hottest reported thermal-zone reading |
+| Battery | Capacity, charging state, and remaining time when the host reports it |
+| Temperature | Hottest reported thermal-zone reading; currently Linux only |
 
-Metrics are read from Linux `/proc`, `/sys`, and filesystem data without launching a subprocess.
+Metric sources vary by platform. Linux reads `/proc` and `/sys` and uses fixed system commands where needed. macOS uses system commands such as `top`, `vm_stat`, `sysctl`, `netstat`, `pmset`, `df`, and `ps`. Windows uses the app's native Rust module and does not start a command interpreter or subprocess for metrics. A metric is reported unavailable when its source is missing or cannot be parsed; Superbar does not estimate unavailable values. CPU and network rates need two readings, so they briefly show `sampling…` after startup. Windows process entries that cannot be queried with the current user's permissions are omitted.
 
-The disk tile shows a time-to-full estimate, such as `55.9 GB free · full in 3h 12m`, once recent free-space samples show space shrinking across at least ten minutes. The battery tile adds the time remaining (`Discharging · 2h 14m left`, or `to full` while charging) when the system exposes energy or charge and rate readings.
-
-Clicking the CPU or memory tile opens a list of its top five processes, each with its name and either its share of all CPUs or its resident memory. Clicking the same tile closes the list. CPU shares need two readings, so the first one shows `sampling…`. Superbar reads at most 512 processes from `/proc` per update. Network rates sum interfaces other than loopback and common virtual interfaces. CPU and network need two readings to calculate a rate; after the first baseline reading, Superbar takes a follow-up reading about one second later. Battery or temperature may show unavailable if the expected sensors are not exposed by the system.
-
-Values at high levels use alert coloring: 90% for usage metrics (disk uses the disk alert threshold above), 15% or below for a non-charging battery, and 85°C for temperature. Network rates have no fixed alert threshold.
+High values use alert coloring: 90% for usage metrics (Disk uses its configured threshold), 15% or lower for a non-charging battery, and 85°C for temperature. Network rates have no fixed alert threshold.
 
 ## Settings and refresh intervals
 
-The gear button opens settings inside the menu; its back button returns to usage. Closing the menu also returns to the usage screen. The GNOME Extensions preferences window exposes the same display switches and refresh intervals.
+Open Settings with the gear button in the dashboard. Provider refresh and system-metric refresh have independent automatic-refresh controls. Provider refresh defaults to 60 seconds and cannot be set below 60 seconds. Each metric interval can be set from 1 second to 1 hour. Defaults are CPU 2s, memory 5s, swap 10s, disk 30s, network 1s, battery 30s, and temperature 5s. Settings are saved under nsh's per-user data directory.
 
-Provider usage and system metrics have independent automatic-refresh switches and intervals. Provider refresh defaults to 60 seconds and cannot be set below 60 seconds. System intervals can be set from 1 second to 1 hour. Defaults are CPU 2s, memory 5s, swap 10s, disk 30s, network 1s, battery 30s, and temperature 5s. The menu settings editor accepts seconds or minutes; the preferences window accepts seconds.
+The Settings screen runs a local setup check when opened. Choose **Run again** to repeat it; the check reports credential and storage readiness without displaying secret values.
 
-The extension imposes a 40-second timeout on a provider fetch. The CLI's provider-fetch worker has its own 35-second deadline; see the [CLI reference](cli.md).
+## Window behavior
+
+On Linux and Windows, the dashboard normally opens in a separate window while the app's main window is kept out of the way. On macOS, or if opening a second window or installing the tray is unavailable, the main app window is used as the dashboard. Closing the main window can quit the app; this behavior depends on the nsh host and cannot currently be intercepted by the TSX API. Use **Hide dashboard** to hide it without quitting.

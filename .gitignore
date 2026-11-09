@@ -1,7 +1,13 @@
-# Zig build output and downloaded package cache
+# nsh and Rust build output
+.nsh/
+target/
+node_modules/
+/dist/
+
+# Existing local build/design caches; not part of the app source
 /.zig-cache/
 /zig-out/
-/zig-pkg/
+/.hallmark/
 
 # Local environment and editor files
 .env
@@ -9,6 +15,4 @@
 !.env.example
 *.swp
 *~
-# Local Hallmark state and release build output
-.hallmark/salt
-/stage/
+.DS_Store

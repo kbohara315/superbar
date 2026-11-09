@@ -62,7 +62,7 @@ export interface TrayInput {
     names: readonly ProviderName[];
     now: number;
     mode: UsageDisplay;
-    /** The last refresh failed; the pills then carry the `!` marker, as the extension does. */
+    /** The last refresh failed; the pills then carry the `!` marker. */
     failed: boolean;
 }
 
@@ -173,7 +173,7 @@ function tightest(snapshot: Snapshot, name: ProviderName, now: number): UsageWin
 //   `wk!`  the weekly window is at 90% used and the 5-hour one is not (the pill's own marker, from pillText);
 //   `⚠`    the pill is red (either window at 90% used) and `wk!` does not already say why. This is the one that
 //          reads "near the limit" when the 5-hour window itself is high;
-//   `!`    the last refresh failed (the pill's failure marker, as the extension shows it);
+//   `!`    the last refresh failed;
 //   `(stale)` the provider's data is stale.
 // Examples: `Codex 5h 75% left`, `Claude Code 5h 5% left ⚠`, `Codex 5h 90% left wk!`, `Codex 5h 75% left !`,
 // `Claude Code 5h 5% left ⚠ !`, `Codex 5h 75% left (stale)`. Null with no provider enabled.
@@ -191,7 +191,7 @@ export function pillLine(pills: readonly TrayPill[], mode: UsageDisplay): string
     }).join(" · ");
 }
 
-// One metric's short value (the dashboard's and the extension capsule's forms, from metrics.ts shortMetricText), with
+// One metric's short value (the dashboard and tray summary forms, from metrics.ts shortMetricText), with
 // ` !` at the alert level the dashboard uses (metricLevel).
 export function metricShort(name: MetricName, reading: MetricReading | undefined, diskThreshold: number): string {
     const label = METRIC_LABEL[name];
@@ -207,7 +207,7 @@ export function metricsLine(settings: Settings, metrics: Partial<Record<MetricNa
     return enabled.map(name => metricShort(name, metrics[name], settings.diskAlertThreshold)).join(" · ");
 }
 
-// The CLI's status line (`cx 58% left 5h · cl 29% left 5h`, or `cx 42% 5h · cl 71% 5h` with the display set to used),
+// The provider status line (`cx 58% left 5h · cl 29% left 5h`, or `cx 42% 5h · cl 71% 5h` with the display set to used),
 // but only for providers whose tightest usable window is NOT the 5-hour one: the pill line already shows the 5-hour
 // numbers, so repeating them would print the same numbers twice. Null when no provider has a weekly window tighter
 // than its 5-hour one (or none is enabled).

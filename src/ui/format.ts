@@ -1,5 +1,5 @@
-// Text and numbers for the dashboard, as plain functions of the data and the clock. Each rule mirrors the GNOME
-// extension's renderer (../../extension/extension.js); the model functions in ../model.ts do the arithmetic.
+// Text and numbers for the dashboard, as plain functions of the data and the clock. The model functions in ../model.ts
+// do the arithmetic.
 
 import {
     displayPercent, errorReason, refreshFailureText, resetClock, resetCountdown, stateText, syncedText, tokenExpiryText,
@@ -21,7 +21,7 @@ export const PROVIDER_TITLE: Record<ProviderName, string> = { codex: "Codex", cl
 export const METRIC_TITLE: Record<MetricName, string> = {
     cpu: "CPU", memory: "Memory", swap: "Swap", disk: "Disk", network: "Network", battery: "Battery", temperature: "Temperature",
 };
-// The two usage windows are always listed under these titles on a card, as the extension lists them.
+// The two usage windows are always listed under these titles on a provider card.
 export const WINDOW_TITLE = { primary: "5-hour", secondary: "Weekly" } as const;
 
 export function displayMode(showRemaining: boolean): UsageDisplay {
@@ -124,13 +124,13 @@ export function headerStatus(status: RefreshStatus, refreshing: boolean): string
     }
 }
 
-// Interval editor text: seconds, or minutes when the unit is `m` (the extension's unit button).
+// Interval editor text: seconds, or minutes when the unit is `m`.
 export function intervalText(seconds: number, unit: "s" | "m"): string {
     const value = unit === "m" ? seconds / 60 : seconds;
     return String(Math.round(value * 10) / 10);
 }
 
-// Starts in minutes only when the value is a whole number of minutes, as the extension does.
+// Starts in minutes only when the value is a whole number of minutes.
 export function defaultUnit(seconds: number): "s" | "m" {
     return seconds >= 60 && seconds % 60 === 0 ? "m" : "s";
 }

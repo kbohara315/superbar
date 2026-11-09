@@ -1,6 +1,5 @@
 // Tests for the provider layer. Fake files, processes and fetch are injected, so nothing touches the network or the
-// real disk. The Zig unit tests about parsing, error mapping, carry-forward, expiry and doctor expiry text have
-// counterparts here (the Zig source is ../../src/main.zig).
+// real disk. Parsing, error mapping, carry-forward, expiry and doctor behavior are covered with fixtures here.
 
 import { describe, expect, test } from "nsh/test";
 import {

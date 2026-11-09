@@ -1,11 +1,11 @@
 // Settings for Superbar on nsh: defaults, validation on load, and the JSON file they are saved in.
-// Pure functions only; the controller decides when to read and write. Ranges and defaults follow ../docs/usage.md
-// and the GNOME extension's schema (../extension/schemas).
+// Pure functions only; the controller decides when to read and write. Ranges and defaults are documented in
+// ../docs/usage.md.
 
 import { DEFAULT_METRIC_SECONDS } from "./types";
 import type { MetricName, ProviderName, Settings } from "./types";
 
-// `Settings` (types.ts) is the shared shape; `systemRefresh` is the extension's `auto-system-refresh` switch.
+// `Settings` (types.ts) is the shared shape; `systemRefresh` controls automatic metric sampling.
 
 export const PROVIDER_NAMES: readonly ProviderName[] = ["codex", "claude"];
 export const METRIC_NAMES: readonly MetricName[] = ["cpu", "memory", "swap", "disk", "network", "battery", "temperature"];
