@@ -22,6 +22,7 @@ export function defaultSettings(): Settings {
   const metrics = {} as Settings["metrics"];
   for (const name of METRIC_NAMES) metrics[name] = { enabled: false, seconds: DEFAULT_METRIC_SECONDS[name] };
   return {
+    launchAtLogin: true,
     showRemaining: true,
     alerts: true,
     diskAlertThreshold: DEFAULT_DISK_THRESHOLD,
@@ -64,6 +65,7 @@ export function normalizeSettings(raw: unknown): Settings {
     };
   }
   return {
+    launchAtLogin: bool(input.launchAtLogin, defaults.launchAtLogin),
     showRemaining: bool(input.showRemaining, defaults.showRemaining),
     alerts: bool(input.alerts, defaults.alerts),
     diskAlertThreshold: clampWhole(input.diskAlertThreshold, DISK_THRESHOLD_MIN, DISK_THRESHOLD_MAX, DEFAULT_DISK_THRESHOLD),

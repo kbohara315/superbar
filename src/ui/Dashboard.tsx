@@ -2,6 +2,7 @@
 // which unmounts it) returns the next opening to the usage screen.
 
 import { cleanup, Text, View } from "nsh";
+import type { Accessor } from "nsh";
 import type { Controller } from "../controller";
 import { headerStatus } from "./format";
 import { IconButton } from "./Controls";
@@ -10,6 +11,8 @@ import { UsageScreen } from "./UsageScreen";
 
 export interface DashboardProps {
     controller: Controller;
+    launchAtLoginSupported?: boolean;
+    launchAtLoginError?: Accessor<string | null>;
     /** Called when the window's content unmounts (the user closed the window). */
     onClosed?: () => void;
 }
@@ -17,8 +20,12 @@ export interface DashboardProps {
 export function Dashboard(props: DashboardProps) {
     const c = props.controller;
     cleanup(() => {
-        c.screen.set("usage");
-        props.onClosed?.();
+        // A main-window dashboard unmounts when the tray hides it. Keep its current screen for the next open; a separately
+        // closed Windows dashboard resets to Usage and reports its window closure.
+        if (props.onClosed) {
+            c.screen.set("usage");
+            props.onClosed();
+        }
     });
     const settings = () => c.screen() === "settings";
     return (
@@ -48,7 +55,13 @@ export function Dashboard(props: DashboardProps) {
             </View>
             <View style={{ flex: 1 }}>
                 {c.ready() ? (
-                    settings() ? <SettingsScreen controller={c} /> : <UsageScreen controller={c} />
+                    settings() ? (
+                        <SettingsScreen
+                            controller={c}
+                            launchAtLoginSupported={props.launchAtLoginSupported}
+                            launchAtLoginError={props.launchAtLoginError}
+                        />
+                    ) : <UsageScreen controller={c} />
                 ) : (
                     <Text class="px-4 py-6 text-sm text-muted-foreground">Loading…</Text>
                 )}

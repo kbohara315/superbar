@@ -14,6 +14,7 @@ interface Scenario {
     readings: Partial<Record<MetricName, MetricReading>>;
     doctor: DoctorCheck[];
     storageInsecure?: boolean;
+    launchAtLoginSupported?: boolean;
 }
 
 const timers: TimerPort = {
@@ -54,16 +55,20 @@ function controllerFor(scenario: Scenario): Controller {
 
 function Harness() {
     const ready = signal<Controller | null>(null);
+    const launchAtLoginSupported = signal(false);
     void (async () => {
         const text = await Storage.getItem("scenario");
         const scenario: Scenario = text ? JSON.parse(text) : { snapshot: null, settings: null, readings: {}, doctor: [] };
+        launchAtLoginSupported.set(scenario.launchAtLoginSupported ?? false);
         const controller = controllerFor(scenario);
         await controller.start();
         ready.set(controller);
     })();
     return (
         <View class="flex-1 bg-background">
-            {ready() ? <Dashboard controller={ready() as Controller} /> : <Text>Loading…</Text>}
+            {ready() ? (
+                <Dashboard controller={ready() as Controller} launchAtLoginSupported={launchAtLoginSupported()} />
+            ) : <Text>Loading…</Text>}
         </View>
     );
 }

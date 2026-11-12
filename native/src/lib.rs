@@ -19,8 +19,23 @@ pub use crate::metrics::{
     SwapStatus, WindowsMetrics,
 };
 
+/// Runtime metadata needed to register the packaged executable for login startup.
+#[module]
+pub struct AppRuntime;
+
+#[module]
+impl AppRuntime {
+    /// Absolute path of the current executable, or `null` if the host cannot report it.
+    pub fn executable_path() -> Option<String> {
+        std::env::current_exe()
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+}
+
 /// The crate's UI set (`nsh.json` `"rust"`): what `src/winmetrics.ts` imports from `superbar/native`.
 #[native_module("superbar/native")]
 fn native(registry: &mut Registry) {
     registry.module::<WindowsMetrics>();
+    registry.module::<AppRuntime>();
 }

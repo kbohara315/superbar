@@ -4,6 +4,7 @@ import { clampWhole, defaultSettings, normalizeSettings, parseSettings, serializ
 
 test("defaults follow the usage spec: remaining, alerts, 90% disk, both providers, metrics off", () => {
     const s = defaultSettings();
+    expect(s.launchAtLogin).toBe(true);
     expect(s.showRemaining).toBe(true);
     expect(s.alerts).toBe(true);
     expect(s.diskAlertThreshold).toBe(90);
@@ -75,6 +76,12 @@ test("a file saved before systemRefresh existed loads it on, and a bad value tak
     expect(parseSettings(older).alerts).toBe(false);
     expect(normalizeSettings({ systemRefresh: { enabled: "no" } }).systemRefresh).toEqual({ enabled: true });
     expect(normalizeSettings({ systemRefresh: { enabled: false } }).systemRefresh).toEqual({ enabled: false });
+});
+
+test("launch-at-login defaults on for older settings and validates explicit values", () => {
+    expect(parseSettings('{"version":1}').launchAtLogin).toBe(true);
+    expect(normalizeSettings({ launchAtLogin: "yes" }).launchAtLogin).toBe(true);
+    expect(normalizeSettings({ launchAtLogin: false }).launchAtLogin).toBe(false);
 });
 
 test("settingsFromText: a JSON object is accepted (bad fields take defaults); damaged text and non-objects give null", () => {

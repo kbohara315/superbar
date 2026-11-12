@@ -38,6 +38,7 @@ export interface MetricReading {
 export interface ProcessEntry { name: string; value: number; text: string }
 
 export interface Settings {
+  launchAtLogin: boolean; // create an XDG autostart entry on Linux, default true
   showRemaining: boolean; // default true
   alerts: boolean; // default true
   diskAlertThreshold: number; // 50..99, default 90

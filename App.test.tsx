@@ -15,6 +15,7 @@ function dashboard(scenario: {
     readings?: Partial<Record<MetricName, MetricReading>>;
     doctor?: DoctorCheck[];
     storageInsecure?: boolean;
+    launchAtLoginSupported?: boolean;
 }) {
     return open("./tests/harness.tsx", {
         clock: { time: new Date(T0) },
@@ -25,6 +26,7 @@ function dashboard(scenario: {
                 readings: scenario.readings ?? {},
                 doctor: scenario.doctor ?? [],
                 storageInsecure: scenario.storageInsecure ?? false,
+                launchAtLoginSupported: scenario.launchAtLoginSupported ?? false,
             }),
         },
     });
@@ -117,6 +119,15 @@ test("the settings screen opens from the gear and goes back to usage", async () 
     await app.press("id:settings-back");
     await app.waitFor("text:80% left");
     expect(app.shows("text:Usage and disk alerts")).toBe(false);
+});
+
+test("the Linux login-start option is shown on Settings", async () => {
+    const app = await dashboard({ snapshot: liveSnapshot(), launchAtLoginSupported: true });
+    await app.press("id:open-settings");
+    await app.waitFor("text:Start Superbar when I sign in");
+    expect(app.shows("id:launch-at-login")).toBe(true);
+    await app.press("id:launch-at-login");
+    expect(app.shows("id:launch-at-login")).toBe(true);
 });
 
 test("enabled system metrics show as tiles, and disabled ones do not", async () => {
@@ -295,12 +306,13 @@ function fakeDesktop(platform: string): Fake {
     return fake;
 }
 
-function windowsFor(fake: Fake) {
+function windowsFor(fake: Fake, singleWindow = false) {
     return createDashboardWindows({
         port: fake.port,
         setScreen: screen => fake.screens.push(screen),
         appName: "Superbar",
         size: { width: 380, height: 660 },
+        singleWindow,
     });
 }
 
@@ -362,6 +374,27 @@ test("Linux: open, hide, reopen and close of the second window, and the screen i
 
     windows.open("settings");
     expect(fake.screens).toEqual(["usage", "usage", "settings"]);
+});
+
+test("Linux single-window mode uses the main dashboard and never opens a second window", () => {
+    const fake = fakeDesktop("linux");
+    const windows = windowsFor(fake, true);
+    windows.hideMainWindow();
+    expect(windows.inMain()).toBe(true);
+    expect(windows.shown()).toBe(false);
+
+    windows.open("settings");
+    expect(fake.count("openWindow")).toBe(0);
+    expect(fake.count("orderFront")).toBe(1);
+    expect(fake.screens).toEqual(["settings"]);
+    expect(windows.shown()).toBe(true);
+
+    windows.hide();
+    expect(windows.shown()).toBe(false);
+    windows.open();
+    expect(fake.count("openWindow")).toBe(0);
+    expect(windows.shown()).toBe(true);
+    expect(fake.screens).toEqual(["settings"]);
 });
 
 test("a second window whose hide() throws is still reported as showing", () => {

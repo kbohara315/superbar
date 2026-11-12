@@ -3,7 +3,7 @@
 // the real nsh window API into `DesktopPort`; nothing here imports nsh/desktop.
 //
 // Facts used (nsh's docs, website/modules/nsh-desktop.md, and its source; nothing here was run on Windows or macOS):
-//   - Window.open runs on Linux and Windows and throws elsewhere (macOS).
+//   - Window.open runs on Linux and Windows and throws elsewhere (macOS); Superbar uses it only on Windows.
 //   - Window.orderFront raises and focuses the main window (macOS deminiaturizes, Windows restores a minimized one).
 //   - Window.setSkipTaskbar(true) removes the main window's taskbar entry on Windows only; the other platforms ignore
 //     it. nsh keeps the choice and re-applies it every time the window is shown.
@@ -15,10 +15,9 @@
 //     the engine and returns from run_app, its Windows doc that it closes the other windows and ends the app, and its
 //     Linux doc that closing the window ends `nsh run` (what it does to a packaged Linux app, and to one kept alive by a
 //     tray, is NOT verified here). Nothing in nsh's TSX API intercepts it (macOS's keep_alive_on_close is a Rust
-//     AppOptions field). So this holds for the main window as dashboard on every platform, i.e. on macOS always, and on
-//     Linux and Windows once the tray failed or Window.open threw, and for the hidden placeholder on Linux and Windows
-//     if something closes it. The app can only keep the placeholder out of the way (minimize, plus the taskbar flag
-//     on Windows).
+//     AppOptions field). So this holds for the main window as dashboard on macOS and Linux, and on Windows once the tray
+//     failed or Window.open threw. Linux uses its main window as the dashboard to avoid a separate blank placeholder.
+//     Windows can keep its placeholder out of the way (minimize, plus the taskbar flag).
 //   - The placeholder's minimize: nsh's Minimize is ShowWindow(SW_MINIMIZE) and its skip-taskbar is
 //     ITaskbarList::DeleteTab (crates/nsh-platform-windows/src/chrome.rs). nsh documents no "hide the main window"
 //     command. Windows may leave a minimized window without a taskbar button as a small caption strip near the screen
@@ -55,6 +54,8 @@ export interface DesktopPort {
 
 export interface DashboardWindowsOptions {
     port: DesktopPort;
+    /** Use the existing main window for the dashboard, even where a second window is available. */
+    singleWindow?: boolean;
     /** Selects the screen; a plain open passes none and keeps the one showing. */
     setScreen(screen: Screen): void;
     appName: string;
@@ -82,7 +83,7 @@ export interface DashboardWindows {
 
 export function createDashboardWindows(options: DashboardWindowsOptions): DashboardWindows {
     const { port, setScreen, appName, size } = options;
-    const hasSecondWindow = port.platform === "linux" || port.platform === "windows";
+    const hasSecondWindow = !options.singleWindow && (port.platform === "linux" || port.platform === "windows");
     const inMain = signal(!hasSecondWindow);
 
     let dashboard: WindowHandle | null = null;

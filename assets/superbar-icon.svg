@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Superbar</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f1f23"/>
+      <stop offset="1" stop-color="#0a0a0b"/>
+    </linearGradient>
+    <linearGradient id="claude" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#d97757"/>
+      <stop offset="1" stop-color="#f0a07f"/>
+    </linearGradient>
+    <linearGradient id="codex" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#10a37f"/>
+      <stop offset="1" stop-color="#3fd9b0"/>
+    </linearGradient>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="212" fill="url(#bg)"/>
+  <rect x="49.5" y="49.5" width="925" height="925" rx="210.5" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="3"/>
+  <g fill="none" stroke-linecap="round" stroke-width="96">
+    <path d="M314.0 718.0A280 280 0 1 1 710.0 718.0" stroke="#ffffff" stroke-opacity="0.10"/>
+    <path d="M397.4 634.6A162 162 0 1 1 626.6 634.6" stroke="#ffffff" stroke-opacity="0.10"/>
+    <path d="M314.0 718.0A280 280 0 1 1 783.2 450.4" stroke="url(#claude)"/>
+    <path d="M397.4 634.6A162 162 0 0 1 527.2 358.7" stroke="url(#codex)"/>
+  </g>
+  <rect x="392" y="780" width="240" height="60" rx="30" fill="#f4f4f5"/>
+</svg>

@@ -44,10 +44,10 @@ High values use alert coloring: 90% for usage metrics (Disk uses its configured 
 
 ## Settings and refresh intervals
 
-Open Settings with the gear button in the dashboard. Provider refresh and system-metric refresh have independent automatic-refresh controls. Provider refresh defaults to 60 seconds and cannot be set below 60 seconds. Each metric interval can be set from 1 second to 1 hour. Defaults are CPU 2s, memory 5s, swap 10s, disk 30s, network 1s, battery 30s, and temperature 5s. Settings are saved under nsh's per-user data directory.
+Open Settings with the gear button in the dashboard. On Linux, **Start Superbar when I sign in** creates or removes Superbar's entry in `~/.config/autostart`. Provider refresh and system-metric refresh have independent automatic-refresh controls. Provider refresh defaults to 60 seconds and cannot be set below 60 seconds. Each metric interval can be set from 1 second to 1 hour. Defaults are CPU 2s, memory 5s, swap 10s, disk 30s, network 1s, battery 30s, and temperature 5s. Settings are saved under nsh's per-user data directory.
 
 The Settings screen runs a local setup check when opened. Choose **Run again** to repeat it; the check reports credential and storage readiness without displaying secret values.
 
 ## Window behavior
 
-On Linux and Windows, the dashboard normally opens in a separate window while the app's main window is kept out of the way. On macOS, or if opening a second window or installing the tray is unavailable, the main app window is used as the dashboard. Closing the main window can quit the app; this behavior depends on the nsh host and cannot currently be intercepted by the TSX API. Use **Hide dashboard** to hide it without quitting.
+On Linux and macOS, the main app window is the dashboard; hiding it also unmounts the dashboard UI while the tray remains active. Windows uses a separate dashboard window. If the tray is unavailable, the main app window remains available. Closing the main window can quit the app; this behavior depends on the nsh host and cannot currently be intercepted by the TSX API. Use **Hide dashboard** to hide it without quitting.

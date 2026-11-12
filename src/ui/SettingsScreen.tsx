@@ -55,7 +55,11 @@ function MetricRow(props: { controller: Controller; name: MetricName }) {
     );
 }
 
-export function SettingsScreen(props: { controller: Controller }) {
+export function SettingsScreen(props: {
+    controller: Controller;
+    launchAtLoginSupported?: boolean;
+    launchAtLoginError?: () => string | null;
+}) {
     const c = props.controller;
     // Each opening of the settings view checks the local setup once; the Run doctor button checks again.
     untracked(() => void c.runDoctor());
@@ -76,6 +80,19 @@ export function SettingsScreen(props: { controller: Controller }) {
             <Caption text="USAGE" />
             <SwitchRow testID="show-remaining" title="Show remaining usage (off = show used)" value={() => c.settings().showRemaining}
                 onChange={on => c.updateSettings(s => ({ ...s, showRemaining: on }))} />
+            {props.launchAtLoginSupported ? (
+                <>
+                    <Divider />
+                    <Caption text="STARTUP" />
+                    <SwitchRow testID="launch-at-login" title="Start Superbar when I sign in" value={() => c.settings().launchAtLogin}
+                        onChange={on => c.updateSettings(s => ({ ...s, launchAtLogin: on }))} />
+                    {props.launchAtLoginError?.() ? (
+                        <Text class="text-xs text-orange-700 dark:text-orange-400" testID="launch-at-login-error">
+                            {props.launchAtLoginError()}
+                        </Text>
+                    ) : null}
+                </>
+            ) : null}
             <SwitchRow testID="alerts" title="Usage and disk alerts" value={() => c.settings().alerts}
                 onChange={on => c.updateSettings(s => ({ ...s, alerts: on }))} />
             <View class="flex-row items-center gap-2">

@@ -1,22 +1,29 @@
-// Superbar on nsh: a tray-resident app. The tray icon shows the provider pills; its menu and a click open the dashboard,
-// a popup window of the app's own. Production wiring lives here: the real providers, metric samplers, notifications
+// Superbar on nsh: a tray-resident app. The tray icon shows the provider pills; its menu and a click raise the dashboard
+// (in the main window on Linux/macOS, a separate window on Windows). Production wiring lives here: providers, samplers, notifications
 // and the settings file in ${dataDir}. Everything else is in src/ and is tested with fakes.
 
 import process from "process";
-import { mount, Notifications, Text, View } from "nsh";
+import { effect, mount, Notifications, signal, Text, View } from "nsh";
 import { isAvailable, Window, windowState } from "nsh/desktop";
+import * as fsPromises from "fs/promises";
+import os from "os";
+import { randomUUID } from "crypto";
+import { AppRuntime } from "superbar/native";
 import * as providers from "./src/providers";
 import { MetricsSampler } from "./src/metrics";
 import { Controller } from "./src/controller";
 import type { ControllerDeps } from "./src/controller";
 import { installTray, nshTrayPort } from "./src/tray";
 import { settingsStore } from "./src/store";
+import { createLoginAutostart } from "./src/login-autostart";
 import { Dashboard } from "./src/ui/Dashboard";
 import { createDashboardWindows, startTray } from "./src/windows";
 
 const APP_NAME = "Superbar";
 const DASHBOARD_ID = "dashboard";
 const DASHBOARD_SIZE = { width: 380, height: 660 };
+const launchAtLoginError = signal<string | null>(null);
+let loginAutostartRequest = 0;
 
 const timers: ControllerDeps["timers"] = {
     setInterval: (callback, ms) => setInterval(callback, ms),
@@ -43,15 +50,27 @@ const controller = new Controller({
     store: settingsStore(process.dataDir),
 });
 
-// Where the dashboard lives (src/windows.ts holds the logic, tested over a fake port). nsh's Window.open runs on Linux and
-// Windows and throws on other platforms (macOS), so there the dashboard is the app's main window itself: a tray click
-// raises it (orderFront restores a minimized window) and "Hide dashboard" minimizes it. The same fallback applies when
-// Window.open throws on a host that was expected to have it, and when the tray cannot be installed (the main window is
-// then the only way in, so it is left showing the dashboard). A second window still up at that moment is hidden.
+const loginAutostart = createLoginAutostart({
+    platform: process.platform,
+    homeDir: () => os.homedir(),
+    executablePath: () => AppRuntime.executablePath(),
+    fs: {
+        mkdir: path => fsPromises.mkdir(path, { recursive: true }).then(() => undefined),
+        writeFile: (path, text) => fsPromises.writeFile(path, text),
+        rename: (from, to) => fsPromises.rename(from, to),
+        unlink: path => fsPromises.unlink(path),
+    },
+    newName: () => randomUUID(),
+});
+
+// Where the dashboard lives (src/windows.ts holds the logic, tested over a fake port). Linux and macOS use the main
+// window; Windows uses a second window. A tray click raises the main window or focuses the second window; "Hide dashboard"
+// minimizes or hides it. If the tray cannot be installed, the main window is left showing the dashboard. If a second
+// window is still up at that moment, it is hidden.
 // Closing the main window ends the app (documented by nsh for macOS and Windows, and for `nsh run` on Linux; a packaged
 // Linux app, or one a tray keeps alive, is unverified). nsh's TSX API cannot intercept it. So wherever the main window is
-// the dashboard (macOS always; Linux and Windows after the fallbacks above) its close button quits the app, and on Linux
-// and Windows closing the placeholder would too: a limit of nsh, not worked around here.
+// the dashboard (macOS and Linux always; Windows after the fallbacks above) its close button quits the app. Closing the
+// Windows placeholder would too: a limit of nsh, not worked around here.
 // Platform limit: nsh's AppWindow reports neither whether it is focused nor whether it is on screen, so a tray click
 // always raises the dashboard; hiding it is the menu's "Hide dashboard" item.
 const windows = createDashboardWindows({
@@ -74,9 +93,22 @@ const windows = createDashboardWindows({
     setScreen: screen => controller.screen.set(screen),
     appName: APP_NAME,
     size: DASHBOARD_SIZE,
+    singleWindow: process.platform === "linux",
 });
 
 function App() {
+    effect(() => {
+        if (process.platform !== "linux" || !controller.ready()) return;
+        const request = ++loginAutostartRequest;
+        void loginAutostart.setEnabled(controller.settings().launchAtLogin).then(
+            () => { if (request === loginAutostartRequest) launchAtLoginError.set(null); },
+            () => {
+                if (request === loginAutostartRequest) {
+                    launchAtLoginError.set("Could not update login startup. Check permissions for ~/.config/autostart.");
+                }
+            },
+        );
+    });
     // Install the tray, then put the main window away; a failed `Tray.set` is reported to the windows (src/windows.ts).
     startTray({
         windows,
@@ -97,13 +129,14 @@ function App() {
     void controller.start();
     return (
         <View class="flex-1 bg-background">
-            {isAvailable && windows.inMain() ? (
-                <Dashboard controller={controller} />
-            ) : (
-                <View class="flex-1 items-center justify-center">
-                    <Text class="text-foreground">Superbar</Text>
-                </View>
-            )}
+            {!isAvailable ? <Text class="text-foreground">Superbar</Text> : null}
+            {isAvailable && windows.inMain() && windows.shown() ? (
+                <Dashboard
+                    controller={controller}
+                    launchAtLoginSupported={process.platform === "linux"}
+                    launchAtLoginError={() => launchAtLoginError()}
+                />
+            ) : null}
         </View>
     );
 }

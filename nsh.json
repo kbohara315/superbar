@@ -2,6 +2,7 @@
   "name": "Superbar",
   "id": "com.superbar.app",
   "version": "1.0.0",
+  "icon": "assets/superbar-icon.png",
   "build": 1,
   "capabilities": {
     "network": {
@@ -19,7 +20,8 @@
         "${dataDir}"
       ],
       "write": [
-        "${dataDir}"
+        "${dataDir}",
+        "${homeDir}/.config/autostart"
       ]
     },
     "process": {
