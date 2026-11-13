@@ -130,7 +130,7 @@ function App() {
     return (
         <View class="flex-1 bg-background">
             {!isAvailable ? <Text class="text-foreground">Superbar</Text> : null}
-            {isAvailable && windows.inMain() && windows.shown() ? (
+            {isAvailable && windows.inMain() ? (
                 <Dashboard
                     controller={controller}
                     launchAtLoginSupported={process.platform === "linux"}
